@@ -162,12 +162,13 @@ deck if the word is already waiting as a new card.
 
 ## Books
 
-The project comes with 30 short graded readers in `graded-readers/`, ten each
-for JLPT N5, N4 and N3, and they are the book library until you set `books`.
-Each is an original story of about 1,500 to 3,100 characters, written with
-Claude in the style of a well-known Japanese author or genre (the `～風` in the
-author field), with furigana, a glossary, grammar notes, comprehension
-questions and words to mine.
+The project comes with 38 short graded readers in `graded-readers/`: ten each
+for JLPT N5, N4 and N3, and eight more N3 stories inspired by anime and manga
+(Graded Stories N3 Anime and Manga). They are the book library until you set
+`books`. Each is an original story of about 1,500 to 3,100 characters (at most
+20 minutes of reading), written with Claude in the style of a well-known
+Japanese author, genre or work (the `～風` in the author field), with furigana,
+a glossary, grammar notes, comprehension questions and words to mine.
 
 The [book reader guide](docs/book-reader.md) covers series, reading settings,
 furigana, Anki colours, and notes. Notes, reading progress, and preferences are
@@ -218,7 +219,7 @@ skipped if `fugashi` is not installed.
 | `Start-Reader.cmd` | Double-click launcher for the server |
 | `process_manga.ps1` | Mokuro OCR for manga volumes |
 | `config.example.json` | Every setting with its default, for editing `config.json` by hand |
-| `graded-readers/` | 30 graded readers for N5 to N3, the default book library |
+| `graded-readers/` | 38 graded readers for N5 to N3, the default book library |
 | `reader/` | Python server: `server.py` (HTTP and command line), `config.py` (settings), `epub_library.py` (EPUBs), `known_words.py` (Anki words and coverage), `word_list.py` (words to learn), `jiten.py` (difficulty), `furigana.py` (readings) |
 | `web/manga/` | Manga library page |
 | `web/books/` | Book library and reader |
