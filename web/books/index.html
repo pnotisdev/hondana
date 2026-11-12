@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Books · Hondana</title>
+  <link rel="stylesheet" href="/books/style.css">
+  <script src="/books/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="topbar-in">
+    <span class="brand">Hondana</span>
+    <nav aria-label="Libraries"><a class="tab" href="/">Manga</a><a class="tab active" href="/books/" aria-current="page">Books</a><a class="tab" href="/settings/">Settings</a></nav>
+    <span class="spacer"></span>
+    <label class="search"><span class="visually-hidden">Search books</span><input id="search" type="search" placeholder="Search books"></label>
+    <button id="sort" class="ghost" title="Switch between sorting by name and by Jiten difficulty"></button>
+  </div></header>
+  <main class="page">
+    <section id="library">
+      <h1>Books</h1>
+      <button id="continue" class="secondary continue" hidden></button>
+      <p id="library-status" class="status" role="status">Loading books…</p>
+      <div id="book-grid" class="book-grid"></div>
+    </section>
+    <section id="reader" hidden>
+      <div class="reader-toolbar">
+        <div class="reader-identity">
+          <button id="back" class="secondary back-button">← Library</button>
+          <div class="reader-title"><strong id="reader-title"></strong><span id="reader-author"></span></div>
+        </div>
+        <div class="reader-navigation">
+          <button id="previous" class="secondary" aria-label="Previous section">← <span>Previous</span></button>
+          <label class="section-select"><span class="visually-hidden">Section</span><select id="sections" aria-label="Section"></select></label>
+          <button id="next" class="secondary" aria-label="Next section"><span>Next</span> →</button>
+          <span id="reading-progress" class="reading-progress"></span>
+          <span id="book-progress-label" class="reading-progress" title="Estimated share of the book's characters before this point."></span>
+        </div>
+        <div class="reader-actions">
+          <button id="toggle-settings" class="secondary" aria-label="Reading settings" aria-expanded="false" aria-controls="settings-panel">Settings</button>
+          <button id="toggle-notes" class="secondary" aria-label="Notes" aria-expanded="false" aria-controls="notes-panel">Notes <span id="notes-count"></span></button>
+        </div>
+      </div>
+      <div id="book-progress" class="book-progress" role="progressbar" aria-label="Estimated position in book" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Estimated share of the book's characters before this point."><div id="book-progress-fill" class="book-progress-fill"></div></div>
+      <p id="reader-status" class="reader-status" role="status"></p>
+      <div class="reader-workspace">
+        <div class="reading-stage">
+          <div class="reading-page"><iframe id="page" title="Book content" sandbox="allow-scripts allow-same-origin"></iframe></div>
+          <nav class="page-controls" aria-label="Page navigation">
+            <button id="page-previous" class="page-turn" disabled>Previous page</button>
+            <div class="page-status">
+              <span id="character-progress" class="character-progress" title="Estimated position in kana, kanji, letters and digits; punctuation and furigana are not counted.">Counting characters…</span>
+              <span id="word-legend" class="word-legend" title="Words in this section by their status in Anki. Particles, names without a card and numbers are not counted." hidden></span>
+            </div>
+            <button id="page-next" class="page-turn" disabled>Next page</button>
+          </nav>
+        </div>
+        <aside id="reader-sidebar" class="reader-sidebar" hidden>
+          <section id="settings-panel" class="reader-panel" hidden>
+            <div class="drawer-header"><h2>Reading settings</h2><button id="settings-close" class="ghost drawer-close" aria-label="Close settings">×</button></div>
+            <label class="setting">Writing direction
+              <select id="setting-direction"><option value="original">Publisher's layout</option><option value="vertical">Vertical · 縦書き</option><option value="horizontal">Horizontal · 横書き</option></select>
+            </label>
+            <label class="setting">Japanese typeface
+              <select id="setting-font"><option value="mincho">Mincho · 明朝体 (serif)</option><option value="gothic">Gothic · ゴシック体 (sans serif)</option><option value="publisher">Publisher's font</option></select>
+            </label>
+            <label class="setting">Furigana
+              <select id="setting-furigana"><option value="original">Publisher's readings only</option><option value="generated">Generate missing readings</option><option value="hidden">Hide · point at a word to reveal</option></select>
+            </label>
+            <label class="setting">Anki colours
+              <select id="setting-anki"><option value="off">Off</option><option value="on">Colour words by their Anki status</option></select>
+            </label>
+            <label class="setting">Page color
+              <select id="setting-theme"><option value="paper">Warm paper</option><option value="light">White</option><option value="dark">Dark</option><option value="original">Publisher's colors</option></select>
+            </label>
+            <label class="setting">Text size <span id="size-value" class="setting-value"></span>
+              <input id="setting-size" type="range" min="14" max="36" step="1">
+            </label>
+            <label class="setting">Line spacing <span id="spacing-value" class="setting-value"></span>
+              <input id="setting-spacing" type="range" min="1.2" max="2.6" step="0.1">
+            </label>
+            <label class="setting">Horizontal text width
+              <select id="setting-width"><option value="narrow">Narrow</option><option value="comfortable">Comfortable</option><option value="wide">Wide</option></select>
+            </label>
+            <button id="reset-settings" class="secondary">Reset settings</button>
+            <p class="drawer-hint">Fonts are used from your device. Turn pages with ← →, Space, or Page Up/Down; in vertical text ← is the next page.</p>
+          </section>
+          <section id="notes-panel" class="reader-panel" hidden>
+            <div class="drawer-header"><h2>Notes</h2><button id="notes-close" class="ghost drawer-close" aria-label="Close notes">×</button></div>
+            <p class="drawer-intro">Select text to include it in a note.</p>
+            <button id="new-note" class="primary">Add note</button>
+            <form id="note-form" class="note-form" hidden>
+              <p id="note-location" class="note-location"></p>
+              <blockquote id="note-quote" class="note-quote" hidden></blockquote>
+              <label class="setting" for="note-text">Your note</label>
+              <textarea id="note-text" rows="5" placeholder="Write a note…" required></textarea>
+              <div class="note-actions"><button type="submit" class="primary">Save note</button><button type="button" id="cancel-note" class="secondary">Cancel</button></div>
+            </form>
+            <div id="notes-list" class="notes-list"></div>
+            <p class="drawer-hint">Notes and progress are saved in this browser.</p>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <div id="series-scrim" class="scrim"></div>
+  <aside id="series-panel" class="panel" role="dialog" aria-modal="true" aria-labelledby="series-title" aria-hidden="true" hidden>
+    <button id="series-close" class="ghost panel-close" aria-label="Close">×</button>
+    <div class="panel-body">
+      <div class="p-top">
+        <div id="series-cover"></div>
+        <div><h2 id="series-title" class="p-title"></h2><p id="series-count" class="p-line"></p><p id="series-difficulty" class="p-line"></p></div>
+      </div>
+      <div id="summary-section" class="p-section" hidden><h3>Summary</h3><p id="series-summary" class="summary"></p></div>
+      <div class="p-section"><h3 id="volumes-heading">Volumes</h3><div id="volume-grid" class="volume-grid"></div></div>
+    </div>
+  </aside>
+</body>
+</html>

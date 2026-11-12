@@ -1,0 +1,24 @@
+{
+  "manga": "~/Manga",
+  "books": "graded-readers",
+  "port": 8421,
+  "lan": false,
+  "allowHosts": [],
+  "skipMangaFolders": [],
+  "jiten": true,
+  "anki": {
+    "url": "http://127.0.0.1:8765",
+    "search": "",
+    "knownInterval": 21,
+    "wordFields": {
+      "Kaishi 1.5k": "Word",
+      "Japanese sentences": "VocabKanji",
+      "Lapis Simplified": "Expression",
+      "JLPT Tango N5 Japanese": "Expression",
+      "JlabNote-JlabConverted-1": "Jlab-Lemma",
+      "JlabNote-JlabConverted-1+": "Jlab-Lemma"
+    },
+    "wordListFields": ["Jlab-Lemma"],
+    "wordCardsOnly": ["JLPT Tango N5 Japanese"]
+  }
+}

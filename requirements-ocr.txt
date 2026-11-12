@@ -1,0 +1,2 @@
+# Mokuro, for process_manga.ps1. 0.2 writes the .html pages and .mokuro files the library reads.
+mokuro>=0.2,<0.3
