@@ -30,6 +30,19 @@ h1 { font-size: 22px; font-weight: 600; margin: 0 0 24px; letter-spacing: -0.01e
 .status { color: var(--text-dim); line-height: 1.5; white-space: pre-line; }
 .status:empty { display: none; }
 .book-grid { display: grid; grid-template-columns: repeat(auto-fill, 150px); gap: 24px 16px; }
+.shelf { margin-bottom: 40px; }
+.shelf-title { font-size: 15px; font-weight: 500; margin: 0 0 14px; }
+.shelf-title small { color: var(--text-dim); font-weight: 400; margin-left: 4px; font-size: 12px; }
+.shelf .status a { color: var(--text); }
+.sort select { font: inherit; font-size: 12px; color: var(--text-dim); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 8px; cursor: pointer; }
+.sort select:hover { color: var(--text); }
+.p-section .p-line + h3 { margin-top: 18px; }
+.to-learn { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.to-learn li { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 9px; border-radius: var(--radius); background: var(--bg-raised); border: 1px solid var(--border); font-size: 15px; }
+.to-learn li[data-status="new"] { border-color: rgba(70, 140, 255, .55); }
+.to-learn small { color: var(--text-dim); font-size: 11px; }
+.setting-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -6px 0 18px; }
+.setting-row .drawer-hint { margin: 0; }
 .book-card { width: 150px; padding: 0; text-align: left; border: 0; background: none; color: var(--text); cursor: pointer; }
 .cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-raised); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); transition: transform .15s, border-color .15s; }
 .book-card:hover .cover { transform: translateY(-2px); border-color: #444; }
@@ -41,6 +54,7 @@ h1 { font-size: 22px; font-weight: 600; margin: 0 0 24px; letter-spacing: -0.01e
 .continue[hidden] { display: none; }
 .card-title { font-size: 14px; font-weight: 500; line-height: 1.4; margin: 8px 0 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card-author, .card-progress { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-author { white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; line-height: 1.45; }
 .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 9; }
 .scrim.open { opacity: 1; pointer-events: auto; }
 .panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); background: var(--panel); border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .2s; z-index: 10; display: flex; flex-direction: column; }

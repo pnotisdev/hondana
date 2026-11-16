@@ -16,17 +16,18 @@ import urllib.parse
 import sys
 import webbrowser
 
-from . import PROJECT_DIR, config, epub_library, furigana, jiten, known_words
+from . import PROJECT_DIR, config, epub_library, furigana, known_words, lookups
 
-ROOT = os.path.expanduser(config.DEFAULTS["manga"])  # these three are set from config.json by configure()
+ROOT = os.path.expanduser(config.DEFAULTS["manga"])  # these two are set from config.json by configure()
 SKIP_MANGA_FOLDERS = set()
-JITEN = True
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp"}
 MANGA_LIBRARY_PATH = os.path.join(PROJECT_DIR, "web", "manga", "index.html")
 SETTINGS_PAGE_PATH = os.path.join(PROJECT_DIR, "web", "settings", "index.html")
 CONFIG_PATH = None  # the --config file, else config.PATH
 # What the settings page may change while the server runs; port and network settings need a restart.
-LIVE_SETTINGS = {"manga", "books", "skipMangaFolders", "jiten", "anki"}
+LIVE_SETTINGS = {"manga", "books", "gradedReaders", "skipMangaFolders", "jiten", "natively", "jpdb", "apiKeys", "anki"}
+LOCAL_POST_PATHS = {"/api/settings", "/api/pick-folder", "/api/lookup-link"}  # this computer only
+POST_PATHS = LOCAL_POST_PATHS | {"/api/furigana", "/api/word-status", "/api/words/refresh"}
 _picking = threading.Lock()
 # Mokuro shows each OCR line as a display:table <p>, which Yomitan's layout-aware scan (on by default)
 # treats as a line break: words split across lines can't be looked up and mined sentences stop at the
@@ -191,11 +192,27 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/thumbnail":
             self.handle_thumbnail(parsed.query)
             return
-        if parsed.path == "/api/difficulty":
-            self.handle_difficulty(parsed.query)
+        if parsed.path == "/api/lookup":
+            self.handle_lookup(parsed.query)
             return
         if parsed.path == "/api/known-words":
             self.handle_known_words(parsed.query)
+            return
+        if parsed.path == "/api/book-known-words":
+            self.handle_book_known_words(parsed.query)
+            return
+        if parsed.path == "/api/features":
+            self._send_json({"lookups": dict(lookups.ENABLED), "canChange": self.from_this_computer(),
+                             "wordSources": known_words.active_sources()})
+            return
+        if parsed.path == "/api/words/status":
+            self._send_json(known_words.word_summary(known_words.anki_words()))
+            return
+        if parsed.path == "/api/anki/note-types":
+            try:
+                self._send_json(known_words.note_types())
+            except known_words.AnkiOffline as error:
+                self._send_json({"error": f"Could not read the note types from Anki: {error}"}, 502)
             return
         if parsed.path == "/api/settings":
             self.send_settings()
@@ -210,18 +227,22 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
 
     def send_settings(self, settings=None):
         settings = settings or config.load(CONFIG_PATH)
-        self._send_json({"settings": {key: value for key, value in settings.items() if key in LIVE_SETTINGS},
+        shown = {key: value for key, value in settings.items() if key in LIVE_SETTINGS}
+        # API keys never leave the server: the page only learns whether one is saved.
+        shown["apiKeys"] = {name: bool(key) for name, key in settings["apiKeys"].items()}
+        self._send_json({"settings": shown,
                          "active": {"manga": ROOT, "books": epub_library.BOOK_ROOT},
+                         "gradedFolder": epub_library.GRADED_ROOT,
                          "configFile": os.path.abspath(CONFIG_PATH or config.PATH),
                          "canChange": self.from_this_computer()})
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ("/api/furigana", "/api/word-status", "/api/settings", "/api/pick-folder"):
+        if path not in POST_PATHS:
             self.send_error(404)
             return
-        if path in ("/api/settings", "/api/pick-folder"):
-            # Only this computer may change where the server reads files from, also with --lan;
+        if path in LOCAL_POST_PATHS:
+            # Only this computer may change settings and saved files, also with --lan;
             # the Origin check refuses other websites (the JSON content type already forces a preflight).
             origin = self.headers.get("Origin")
             if not self.from_this_computer() or (origin and urllib.parse.urlsplit(origin).netloc != self.headers.get("Host")):
@@ -243,11 +264,10 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             self.send_error(400, "Invalid JSON")
             return
-        if path == "/api/settings":
-            self.change_settings(request)
-            return
-        if path == "/api/pick-folder":
-            self.pick_folder(request)
+        handler = {"/api/settings": self.change_settings, "/api/pick-folder": self.pick_folder,
+                   "/api/lookup-link": self.set_lookup_link, "/api/words/refresh": self.refresh_words}.get(path)
+        if handler:
+            handler(request)
             return
         texts = request.get("texts") if isinstance(request, dict) else None
         if (not isinstance(texts, list) or len(texts) > 200 or
@@ -279,13 +299,16 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
 
     def change_settings(self, changes):
         if not isinstance(changes, dict) or not set(changes) <= LIVE_SETTINGS:
-            self.send_error(400, "Only folder, Jiten and Anki settings can be changed here")
+            self.send_error(400, "Only folder, lookup and Anki settings can be changed here")
             return
         for key in ("manga", "books"):
             folder = changes.get(key)
-            if isinstance(folder, str) and not os.path.isdir(os.path.expanduser(folder)):
+            if isinstance(folder, str) and (folder or key == "manga") and not os.path.isdir(os.path.expanduser(folder)):
                 self._send_json({"error": f"The {key} folder does not exist: {folder}"}, 400)
                 return
+        keys = changes.get("apiKeys")
+        if isinstance(keys, dict):  # a key left out keeps the saved one; "" removes it
+            changes["apiKeys"] = {name: key.strip() if isinstance(key, str) else key for name, key in keys.items()}
         try:
             settings = config.save(changes, CONFIG_PATH)
         except config.ConfigError as error:
@@ -361,27 +384,34 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
             return
         self._send_file_bytes(data, name)
 
-    def handle_difficulty(self, query):
+    def handle_lookup(self, query):
         qs = urllib.parse.parse_qs(query)
-        title = qs.get("title", [""])[0]
-        kind = qs.get("type", ["manga"])[0]
-        if not title or kind not in jiten.JITEN_MEDIA_TYPES:
-            self.send_error(400)
-            return
-        if not JITEN:
-            self.send_error(404, "Jiten lookups are turned off in config.json")
+        source, kind, title = (qs.get(name, [""])[0] for name in ("source", "type", "title"))
+        try:
+            self._send_json(lookups.lookup(source, kind or "manga", title))
+        except ValueError:
+            self.send_error(400, "Expected a source, a type (manga or novel) and a title")
+        except lookups.Unavailable as error:
+            self.log_error("%s lookup failed: %s", source, error)
+            self._send_json({"source": source, "error": str(error)}, 502)
+        except OSError as error:
+            self.log_error("Lookup cache failed: %s", error)
+            self.send_error(500, "Lookup cache unavailable")
+
+    def set_lookup_link(self, request):
+        if not isinstance(request, dict) or not all(isinstance(request.get(name), str)
+                                                    for name in ("source", "type", "title", "link")):
+            self.send_error(400, "Expected a source, type, title and link")
             return
         try:
-            result = jiten.get_difficulty(title, kind)
-        except jiten.JitenLookupError as error:
-            self.log_error("Jiten lookup failed: %s", error)
-            self.send_error(502, "Jiten lookup failed")
-            return
+            self._send_json(lookups.set_link(request["source"], request["type"], request["title"], request["link"]))
+        except ValueError as error:
+            self._send_json({"error": str(error)}, 400)
+        except lookups.Unavailable as error:
+            self._send_json({"error": str(error)}, 502)
         except OSError as error:
-            self.log_error("Difficulty cache failed: %s", error)
-            self.send_error(500, "Difficulty cache unavailable")
-            return
-        self._send_json(result)
+            self.log_error("Lookup cache failed: %s", error)
+            self._send_json({"error": "The lookup cache could not be saved"}, 500)
 
     def handle_known_words(self, query):
         name = urllib.parse.parse_qs(query).get("series", [""])[0]
@@ -414,6 +444,35 @@ class Handler(LocalOnly, http.server.SimpleHTTPRequestHandler):
         self._send_json({"ankiOffline": words["offline"], "wordsAt": words["at"], "knownWords": words["knownCount"],
                          "knownInterval": known_words.KNOWN_INTERVAL,
                          "series": known_words.count_known(series_types, words), "volumes": volumes})
+
+    def handle_book_known_words(self, query):
+        ids = urllib.parse.parse_qs(query).get("book", [])
+        try:
+            path = epub_library.book_path(ids[0]) if len(ids) == 1 else None
+        except ValueError:
+            path = None
+        if path is None:
+            self.send_error(404, "Book not found")
+            return
+        words = known_words.anki_words()
+        if words is None:
+            self._send_json({"ankiOffline": True})
+            return
+        try:
+            types, names = known_words.book_types(path, lambda: epub_library.book_paragraphs(ids[0]))
+        except furigana.FuriganaUnavailable as error:
+            self.send_error(503, str(error))
+            return
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, epub_library.ET.ParseError) as error:
+            self.log_error("Cannot count the words in %s: %s", path, error)
+            self.send_error(422, "Could not read the book's text")
+            return
+        self._send_json({"ankiOffline": words["offline"], "wordsAt": words["at"], "knownWords": words["knownCount"],
+                         "knownInterval": known_words.KNOWN_INTERVAL, "book": known_words.count_known(types, words),
+                         "toLearn": known_words.words_to_learn(types, words, names)})
+
+    def refresh_words(self, request):
+        self._send_json(known_words.word_summary(known_words.refresh_now()))
 
     def _send_file_bytes(self, data, name_for_type):
         ctype = mimetypes.guess_type(name_for_type)[0] or "application/octet-stream"
@@ -502,11 +561,13 @@ def choose_folder(start=None):
 
 
 def configure(settings):
-    """Use settings from config.load(): folders, manga folders to leave out, Jiten and Anki."""
-    global ROOT, SKIP_MANGA_FOLDERS, JITEN
+    """Use settings from config.load(): folders, manga folders to leave out, online lookups and Anki."""
+    global ROOT, SKIP_MANGA_FOLDERS
     ROOT, epub_library.BOOK_ROOT = settings["manga"], settings["books"]
-    SKIP_MANGA_FOLDERS, JITEN = set(settings["skipMangaFolders"]), settings["jiten"]
-    known_words.configure(settings["anki"])
+    epub_library.SHOW_GRADED = settings["gradedReaders"]
+    SKIP_MANGA_FOLDERS = set(settings["skipMangaFolders"])
+    lookups.configure(settings)
+    known_words.configure(settings["anki"], settings["apiKeys"]["jpdb"])
 
 
 def parse_arguments(argv=None):
@@ -561,7 +622,7 @@ def main(argv=None):
     if args.books is not None:
         epub_library.BOOK_ROOT = args.books
     for name, folder in (("Manga", ROOT), ("Books", epub_library.BOOK_ROOT)):
-        if not os.path.isdir(folder):
+        if folder and not os.path.isdir(folder):
             print(f"Warning: {name} folder does not exist: {folder}", file=sys.stderr)
             print(f'Set "{name.lower()}" in config.json or use --{name.lower()} to select an existing folder.',
                   file=sys.stderr)
@@ -591,7 +652,9 @@ def main(argv=None):
         content_thread = threading.Thread(target=content_server.serve_forever, daemon=True)
         content_thread.start()
         url = f"http://127.0.0.1:{server.server_address[1]}/"
-        print(f"Manga: {ROOT}\nBooks: {epub_library.BOOK_ROOT}\nLibrary: {url}", flush=True)
+        graded = f"\nGraded readers: {epub_library.GRADED_ROOT}" if epub_library.SHOW_GRADED else ""
+        print(f"Manga: {ROOT}\nBooks: {epub_library.BOOK_ROOT or '(none chosen; see Settings)'}{graded}\n"
+              f"Library: {url}", flush=True)
         if args.lan:
             print(f"LAN mode: other devices can use http://<this computer's address>:{server.server_address[1]}/ "
                   f"(allow TCP ports {server.server_address[1]} and {content_server.server_address[1]} "

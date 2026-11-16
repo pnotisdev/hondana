@@ -14,29 +14,45 @@
   .topbar-in { max-width: 1200px; margin: 0 auto; padding: 0 20px; height: 54px; display: flex; align-items: center; gap: 14px; }
   .brand { font-weight: 700; font-size: 17px; letter-spacing: -0.02em; margin-right: 6px; }
   .tab { padding: 6px 10px; border-radius: var(--radius); background: var(--bg-raised); text-decoration: none; }
-  main { max-width: 720px; margin: 0 auto; padding: 28px 20px 80px; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 20px 80px; }
   h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
   h2 { font-size: 15px; font-weight: 600; margin: 32px 0 14px; padding-top: 18px; border-top: 1px solid var(--border); }
   .sub, .hint { color: var(--text-dim); font-size: 12.5px; line-height: 1.55; }
   .sub { margin: 0 0 8px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 18px 0 7px; }
   .hint { font-weight: 400; margin: 6px 0 0; }
-  .row { display: flex; gap: 8px; }
-  input[type="text"], input[type="number"], textarea { flex: 1; width: 100%; font: inherit; color: var(--text); background: var(--bg-raised); border: 1px solid #333; border-radius: var(--radius); padding: 9px 11px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  input[type="text"], input[type="number"], input[type="password"], textarea, select { flex: 1; width: 100%; font: inherit; color: var(--text); background: var(--bg-raised); border: 1px solid #333; border-radius: var(--radius); padding: 9px 11px; }
   textarea { min-height: 70px; resize: vertical; }
   input[type="number"] { flex: none; width: 110px; }
   .check { display: flex; gap: 10px; align-items: center; font-weight: 400; }
+  .check input { flex: none; }
   button { font: inherit; cursor: pointer; border-radius: var(--radius); padding: 9px 14px; white-space: nowrap; }
   .secondary { color: var(--text); background: var(--bg-raised); border: 1px solid var(--border); }
   .secondary:hover { border-color: #555; }
+  .ghost { color: var(--text-dim); background: none; border: 0; padding: 9px 6px; }
+  .ghost:hover { color: var(--text); }
   .primary { color: #000; background: #f2f2f2; border: 1px solid #f2f2f2; font-weight: 600; }
-  button:disabled, input:disabled, textarea:disabled { opacity: .45; cursor: default; }
-  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .actions { display: flex; gap: 12px; align-items: center; margin-top: 30px; }
-  #status { margin: 0; line-height: 1.5; }
-  #status.bad { color: var(--bad); }
-  #status.good { color: var(--accent); }
+  button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .45; cursor: default; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .actions { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; margin-top: 30px; padding: 14px 0; background: var(--bg); border-top: 1px solid var(--border); }
+  .status { margin: 0; line-height: 1.5; }
+  .bad { color: var(--bad); }
+  .good { color: var(--accent); }
   code { font-size: 12px; }
+  .note-types { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  .note-types th { text-align: left; font-weight: 600; color: var(--text-dim); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .note-types td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .note-types td:first-child { width: 34%; }
+  .note-types .count, .note-types .samples { color: var(--text-dim); font-size: 12px; }
+  .note-types .samples { margin-top: 4px; overflow-wrap: anywhere; }
+  .note-types select { padding: 6px 8px; }
+  .note-types .options { margin-top: 6px; }
+  .note-types .options label { margin: 4px 0 0; font-weight: 400; font-size: 12px; color: var(--text-dim); }
+  .note-types tr[data-on="false"] .field, .note-types tr[data-on="false"] .options { opacity: .45; }
+  .key-state { color: var(--text-dim); font-size: 12.5px; }
+  .sources { display: grid; gap: 4px; margin-top: 8px; }
+  @media (max-width: 600px) { .note-types td:first-child { width: auto; } .row { flex-wrap: wrap; } }
 </style>
 </head>
 <body>
@@ -52,43 +68,77 @@
     <label for="manga">Manga folder</label>
     <div class="row"><input id="manga" type="text" spellcheck="false" required><button type="button" class="secondary" data-pick="manga">Browse…</button></div>
     <p class="hint">One folder per series, holding volume folders or .cbz files and Mokuro's .html files.</p>
-    <label for="books">Books folder</label>
-    <div class="row"><input id="books" type="text" spellcheck="false" required><button type="button" class="secondary" data-pick="books">Browse…</button></div>
+    <label for="books">Your books folder</label>
+    <div class="row"><input id="books" type="text" spellcheck="false" placeholder="None chosen"><button type="button" class="secondary" data-pick="books">Browse…</button><button type="button" class="ghost" id="books-clear">Clear</button></div>
     <p class="hint">EPUB files, also in subfolders. A subfolder of EPUBs becomes a series.</p>
+    <label class="check"><input id="graded" type="checkbox"> Also show the graded readers that come with Hondana</label>
+    <p class="hint" id="graded-folder"></p>
     <label for="skip">Manga folders to leave out</label>
     <textarea id="skip" spellcheck="false" placeholder="One folder name per line"></textarea>
 
     <h2>Anki</h2>
     <label for="anki-url">AnkiConnect address</label>
-    <input id="anki-url" type="text" spellcheck="false" placeholder="http://127.0.0.1:8765">
-    <p class="hint">AnkiConnect uses port 8765 unless you changed <code>webBindPort</code> in its settings.</p>
+    <div class="row"><input id="anki-url" type="text" spellcheck="false" placeholder="http://127.0.0.1:8765"><button type="button" class="secondary" id="check-words">Check</button></div>
+    <p class="hint">AnkiConnect uses port 8765 unless you changed <code>webBindPort</code> in its settings. The reader asks AnkiConnect from its own server and only reads your cards, so <code>webCorsOriginList</code> needs no change.</p>
+    <div id="words-state" class="hint" role="status"></div>
     <label for="anki-search">Cards that count</label>
-    <input id="anki-search" type="text" spellcheck="false" placeholder="All decks">
-    <p class="hint">An Anki search, such as <code>deck:Japanese</code>. Note types and fields are set in the config file.</p>
+    <input id="anki-search" type="text" spellcheck="false" placeholder="All decks" list="decks">
+    <datalist id="decks"></datalist>
+    <p class="hint">An Anki search, such as <code>deck:日本語</code>.</p>
     <label for="anki-interval">Known after</label>
-    <div class="row" style="align-items:center"><input id="anki-interval" type="number" min="1" max="36500" required> <span class="hint" style="margin:0">days of interval</span></div>
+    <div class="row"><input id="anki-interval" type="number" min="1" max="36500" required> <span class="hint" style="margin:0">days of interval</span></div>
+    <label>Note types with words</label>
+    <p class="hint" id="note-types-hint">Choose the note types whose cards are words you study, and the field that holds the word.</p>
+    <div class="row" style="margin-top:8px"><button type="button" class="secondary" id="load-note-types">Show note types from Anki</button></div>
+    <div id="note-types"></div>
 
-    <h2>Online lookups</h2>
-    <label class="check"><input id="jiten" type="checkbox"> Look up difficulty and summaries on jiten.moe</label>
+    <h2>jpdb</h2>
+    <label for="jpdb-key">jpdb API key</label>
+    <div class="row"><input id="jpdb-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the key from jpdb.io → Settings"><button type="button" class="ghost" data-remove-key="jpdb">Remove</button></div>
+    <p class="hint"><span class="key-state" id="jpdb-key-state"></span> With a key, the words in your jpdb decks count as known, learning or new just like your Anki cards, in the word colours and coverage. The key is kept in the config file and never shown again.</p>
+    <label class="check"><input id="jpdb" type="checkbox"> Show jpdb difficulty for books (jpdb has no manga)</label>
 
-    <div class="actions"><button type="submit" class="primary" id="save">Save</button><p id="status" role="status"></p></div>
+    <h2>Jiten and Natively</h2>
+    <label class="check"><input id="jiten" type="checkbox"> Look up difficulty, word statistics and summaries on jiten.moe</label>
+    <label for="jiten-key">Jiten API key (optional)</label>
+    <div class="row"><input id="jiten-key" type="password" autocomplete="off" spellcheck="false" placeholder="jiten.moe → Settings → Advanced → API Key"><button type="button" class="ghost" data-remove-key="jiten">Remove</button></div>
+    <p class="hint"><span class="key-state" id="jiten-key-state"></span> With a key, Jiten also shows how much of each title you know, from the words you track on Jiten.</p>
+    <label class="check"><input id="natively" type="checkbox"> Look up Natively levels on learnnatively.com</label>
+    <p class="hint">Titles are matched by name. If one is matched wrongly, open it in the library and paste the right link under <em>Wrong title?</em>.</p>
+
+    <div class="actions"><button type="submit" class="primary" id="save">Save</button><p id="status" class="status" role="status"></p></div>
     <p class="hint">Changes apply at once. The port and network settings are only read at startup; change them in the config file and restart.</p>
   </form>
 </main>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const status = (text, kind = '') => { $('status').textContent = text; $('status').className = kind; };
+const status = (text, kind = '') => { $('status').textContent = text; $('status').className = 'status ' + kind; };
+let noteTypesShown = false;
+let current = null;
+const removedKeys = new Set();
+
+function showKeyState(name) {
+  const saved = current.apiKeys[name] && !removedKeys.has(name);
+  $(`${name}-key-state`).textContent = removedKeys.has(name) ? 'The key will be removed when you save.' : saved ? 'A key is saved; paste a new one to replace it.' : 'No key saved.';
+}
 
 function show(data) {
   const s = data.settings;
+  current = s;
+  removedKeys.clear();
   $('manga').value = s.manga;
-  $('books').value = s.books;
+  $('books').value = s.books === data.gradedFolder ? '' : s.books;
+  $('graded').checked = s.gradedReaders;
+  $('graded-folder').textContent = `The 38 readers for JLPT N5 to N3 in ${data.gradedFolder}.`;
   $('skip').value = s.skipMangaFolders.join('\n');
   $('anki-url').value = s.anki.url;
   $('anki-search').value = s.anki.search;
   $('anki-interval').value = s.anki.knownInterval;
-  $('jiten').checked = s.jiten;
+  for (const name of ['jiten', 'natively', 'jpdb']) $(name).checked = s[name];
+  $('jiten-key').value = $('jpdb-key').value = '';
+  showKeyState('jiten');
+  showKeyState('jpdb');
   $('where').textContent = `Saved in ${data.configFile}.`;
   if (data.active.manga !== s.manga || data.active.books !== s.books) {
     $('where').textContent += ' A folder given on the command line is in use until you save here.';
@@ -106,6 +156,147 @@ async function reply(response) {
 }
 
 const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(reply);
+
+function describeWords(summary) {
+  const box = $('words-state');
+  box.replaceChildren();
+  box.className = 'hint sources';
+  const names = { anki: 'Anki', jpdb: 'jpdb' };
+  for (const [name, source] of Object.entries(summary.sources || {})) {
+    const line = document.createElement('div');
+    if (source.offline) {
+      line.className = 'bad';
+      line.textContent = `${names[name]}: not reachable${source.error ? ' (' + source.error + ')' : ''}` +
+        (source.counts ? '; using the words saved before' : '');
+    } else {
+      line.className = 'good';
+      const c = source.counts || {};
+      line.textContent = `${names[name]}: ${(c.known || 0).toLocaleString()} known, ${(c.learning || 0).toLocaleString()} learning, ${(c.new || 0).toLocaleString()} new words`;
+    }
+    box.append(line);
+  }
+}
+
+$('check-words').addEventListener('click', async () => {
+  $('check-words').disabled = true;
+  $('words-state').textContent = 'Reading your cards… (save first if you changed the address)';
+  try {
+    describeWords(await post('/api/words/refresh', {}));
+  } catch (error) {
+    $('words-state').textContent = error.message;
+  } finally {
+    $('check-words').disabled = false;
+  }
+});
+
+function option(value, text, selected) {
+  const element = document.createElement('option');
+  element.value = value;
+  element.textContent = text;
+  element.selected = selected;
+  return element;
+}
+
+async function loadNoteTypes() {
+  $('load-note-types').disabled = true;
+  $('note-types-hint').textContent = 'Reading note types from Anki…';
+  try {
+    const data = await (await fetch('/api/anki/note-types')).json().then(result => {
+      if (result.error) throw new Error(result.error);
+      return result;
+    });
+    $('decks').replaceChildren(...data.decks.map(deck => option(`deck:"${deck}"`, deck, false)));
+    const table = document.createElement('table');
+    table.className = 'note-types';
+    table.innerHTML = '<thead><tr><th>Note type</th><th>Field with the word</th></tr></thead>';
+    const body = document.createElement('tbody');
+    const fields = current.anki.wordFields;
+    for (const type of data.noteTypes) {
+      const on = Object.hasOwn(fields, type.name);
+      const row = document.createElement('tr');
+      row.dataset.name = type.name;
+      row.dataset.on = String(on);
+      const nameCell = document.createElement('td');
+      const check = document.createElement('label');
+      check.className = 'check';
+      check.style.margin = '0';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'use';
+      box.checked = on;
+      box.addEventListener('change', () => { row.dataset.on = String(box.checked); });
+      check.append(box, type.name);
+      const count = document.createElement('div');
+      count.className = 'count';
+      count.textContent = `${type.notes.toLocaleString()} notes` + (type.japanese ? '' : ' · no Japanese seen');
+      nameCell.append(check, count);
+      const fieldCell = document.createElement('td');
+      const select = document.createElement('select');
+      select.className = 'field';
+      const chosen = fields[type.name] || type.suggested || type.fields[0];
+      for (const field of type.fields) select.append(option(field, field, field === chosen));
+      const samples = document.createElement('div');
+      samples.className = 'samples';
+      samples.lang = 'ja';
+      const showSamples = () => { samples.textContent = (type.samples[select.value] || []).join('、') || '(empty in the first notes)'; };
+      select.addEventListener('change', showSamples);
+      showSamples();
+      const options = document.createElement('div');
+      options.className = 'options';
+      const list = document.createElement('label');
+      list.className = 'check';
+      const listBox = document.createElement('input');
+      listBox.type = 'checkbox';
+      listBox.className = 'word-list';
+      listBox.checked = current.anki.wordListFields.includes(chosen);
+      list.append(listBox, 'The field lists every word of a sentence, with spaces');
+      const only = document.createElement('label');
+      only.className = 'check';
+      const onlyBox = document.createElement('input');
+      onlyBox.type = 'checkbox';
+      onlyBox.className = 'word-cards';
+      onlyBox.checked = current.anki.wordCardsOnly.includes(type.name);
+      only.append(onlyBox, 'Skip notes whose field is a whole sentence');
+      options.append(list, only);
+      fieldCell.append(select, samples, options);
+      row.append(nameCell, fieldCell);
+      body.append(row);
+    }
+    table.append(body);
+    $('note-types').replaceChildren(table);
+    noteTypesShown = true;
+    $('note-types-hint').textContent = 'Choose the note types whose cards are words you study, and the field that holds the word. Kanji cards (a single kanji) and info notes are best left out.';
+    if (data.missing.length) $('note-types-hint').textContent += ` In use but not in Anki: ${data.missing.join(', ')}.`;
+    $('load-note-types').hidden = true;
+  } catch (error) {
+    $('note-types-hint').textContent = error.message + ' Start Anki and try again.';
+    $('note-types-hint').className = 'hint bad';
+  } finally {
+    $('load-note-types').disabled = false;
+  }
+}
+$('load-note-types').addEventListener('click', loadNoteTypes);
+
+function noteTypeSettings() {
+  const wordFields = {};
+  const listFields = new Set(current.anki.wordListFields);
+  const wordCardsOnly = new Set(current.anki.wordCardsOnly);
+  for (const row of $('note-types').querySelectorAll('tr[data-name]')) {
+    const name = row.dataset.name;
+    const field = row.querySelector('.field').value;
+    if (row.querySelector('.use').checked) wordFields[name] = field;
+    if (row.querySelector('.word-list').checked) listFields.add(field);
+    else if (row.querySelector('.use').checked) listFields.delete(field);
+    if (row.querySelector('.word-cards').checked) wordCardsOnly.add(name);
+    else wordCardsOnly.delete(name);
+  }
+  // Note types not in Anki now are kept as they were.
+  for (const [name, field] of Object.entries(current.anki.wordFields)) {
+    if (!$('note-types').querySelector(`tr[data-name="${CSS.escape(name)}"]`)) wordFields[name] = field;
+  }
+  if (!Object.keys(wordFields).length) throw new Error('Choose at least one note type with words.');
+  return { wordFields, wordListFields: [...listFields], wordCardsOnly: [...wordCardsOnly] };
+}
 
 document.querySelectorAll('[data-pick]').forEach(button => button.addEventListener('click', async () => {
   const input = $(button.dataset.pick);
@@ -125,18 +316,36 @@ document.querySelectorAll('[data-pick]').forEach(button => button.addEventListen
     button.disabled = false;
   }
 }));
+$('books-clear').addEventListener('click', () => { $('books').value = ''; status('Click Save to show only the graded readers.'); });
+document.querySelectorAll('[data-remove-key]').forEach(button => button.addEventListener('click', () => {
+  removedKeys.add(button.dataset.removeKey);
+  $(`${button.dataset.removeKey}-key`).value = '';
+  showKeyState(button.dataset.removeKey);
+}));
+for (const name of ['jiten', 'jpdb']) {
+  $(`${name}-key`).addEventListener('input', () => { removedKeys.delete(name); showKeyState(name); });
+}
 
 $('form').addEventListener('submit', async event => {
   event.preventDefault();
   $('save').disabled = true;
   status('Saving…');
   try {
+    const anki = { url: $('anki-url').value.trim(), search: $('anki-search').value.trim(), knownInterval: Number($('anki-interval').value) };
+    if (noteTypesShown) Object.assign(anki, noteTypeSettings());
+    const apiKeys = {};
+    for (const name of ['jiten', 'jpdb']) {
+      if ($(`${name}-key`).value.trim()) apiKeys[name] = $(`${name}-key`).value.trim();
+      else if (removedKeys.has(name)) apiKeys[name] = '';
+    }
     show(await post('/api/settings', {
       manga: $('manga').value.trim(),
       books: $('books').value.trim(),
+      gradedReaders: $('graded').checked,
       skipMangaFolders: $('skip').value.split('\n').map(line => line.trim()).filter(Boolean),
-      jiten: $('jiten').checked,
-      anki: { url: $('anki-url').value.trim(), search: $('anki-search').value.trim(), knownInterval: Number($('anki-interval').value) },
+      jiten: $('jiten').checked, natively: $('natively').checked, jpdb: $('jpdb').checked,
+      ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
+      anki,
     }));
     status('Saved. The libraries use the new settings now.', 'good');
   } catch (error) {
@@ -146,7 +355,10 @@ $('form').addEventListener('submit', async event => {
   }
 });
 
-fetch('/api/settings').then(reply).then(show).catch(error => status('Could not load the settings: ' + error.message, 'bad'));
+fetch('/api/settings').then(reply).then(data => {
+  show(data);
+  fetch('/api/words/status').then(reply).then(describeWords).catch(() => {});
+}).catch(error => status('Could not load the settings: ' + error.message, 'bad'));
 </script>
 </body>
 </html>

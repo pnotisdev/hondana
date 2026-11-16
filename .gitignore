@@ -1,8 +1,9 @@
 .venv/
 __pycache__/
-# Saved Jiten lookups; the server rebuilds this as titles are looked up.
+# Saved Jiten, Natively and jpdb lookups; the server rebuilds them as titles are looked up.
+lookup_cache.json
 difficulty_cache.json
-# Word lists from Anki and words per manga volume; rebuilt as needed.
+# Word lists from Anki and jpdb, and words per manga volume and book; rebuilt as needed.
 known_words_cache/
 # Your settings (paths, Anki address); config.example.json is the template.
 config.json

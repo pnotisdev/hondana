@@ -7,11 +7,13 @@ import os
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
+import urllib.parse
 from unittest import mock
 
-from reader import config, jiten, known_words, server
+from reader import config, jiten, jpdb, known_words, lookups, natively, server, titles, web
 
 
 class ServerConfigurationTests(unittest.TestCase):
@@ -43,7 +45,7 @@ class ServerConfigurationTests(unittest.TestCase):
             self.assertEqual(args.settings["books"], os.path.join(os.path.expanduser("~"), "Bücher"))
             self.assertEqual(server.parse_arguments(["--config", path, "--port", "9200"]).port, 9200)  # options win
             server.configure(args.settings)
-            self.assertEqual((server.ROOT, server.SKIP_MANGA_FOLDERS, server.JITEN), (args.settings["manga"], {"Duplicate"}, False))
+            self.assertEqual((server.ROOT, server.SKIP_MANGA_FOLDERS, lookups.ENABLED["jiten"]), (args.settings["manga"], {"Duplicate"}, False))
             self.assertEqual((known_words.ANKI_URL, known_words.KNOWN_INTERVAL), ("http://127.0.0.1:9000", 30))
             self.assertEqual(known_words.anki_queries()["known"], 'deck:Japanese ("note:My notes") -is:new prop:ivl>=30')
             self.assertEqual(config.load(path)["anki"]["wordListFields"], ["Jlab-Lemma"])  # unset keys keep defaults
@@ -86,9 +88,11 @@ class ServerConfigurationTests(unittest.TestCase):
                     self.assertEqual(json.loads(get("/api/listing?path=")[1]), [{"name": "Series", "isDir": True}])
                     # Only the library's own top level is filtered.
                     self.assertEqual(json.loads(get("/api/listing?path=Series")[1]), [{"name": "Duplicate", "isDir": True}])
-                    with mock.patch.object(jiten, "get_difficulty") as lookup:
-                        self.assertEqual(get("/api/difficulty?title=Series")[0], 404)
+                    with mock.patch.object(jiten, "search") as lookup:
+                        status, body = get("/api/lookup?source=jiten&type=manga&title=Series")
+                    self.assertEqual((status, "turned off" in json.loads(body)["error"]), (502, True))
                     lookup.assert_not_called()
+                    self.assertEqual(json.loads(get("/api/features")[1])["lookups"]["jiten"], False)
                 finally:
                     httpd.shutdown()
                     thread.join()
@@ -135,6 +139,21 @@ class ServerConfigurationTests(unittest.TestCase):
                     self.assertEqual(call("POST", "/api/settings", {"port": 9999})[0], 400)  # needs a restart
                     with open(path, encoding="utf-8") as file:
                         self.assertEqual(json.load(file), saved)
+                    # An API key is saved but never sent back; "" removes it. No books folder is allowed.
+                    with mock.patch.object(known_words, "forget_anki_words"):
+                        status, body = call("POST", "/api/settings", {"apiKeys": {"jpdb": " secret "}, "books": "",
+                                                                      "gradedReaders": False})
+                        self.assertEqual(status, 200, body)
+                        shown = json.loads(body)["settings"]
+                        self.assertEqual((shown["apiKeys"], shown["books"], shown["gradedReaders"]),
+                                         ({"jiten": False, "jpdb": True}, "", False))
+                        self.assertNotIn(b"secret", call("GET", "/api/settings")[1])
+                        self.assertEqual((known_words.JPDB_KEY, jpdb.API_KEY, server.epub_library.SHOW_GRADED),
+                                         ("secret", "secret", False))
+                        self.assertEqual(call("POST", "/api/settings", {"apiKeys": {"jiten": "j"}})[0], 200)
+                        self.assertEqual((jiten.API_KEY, jpdb.API_KEY), ("j", "secret"))  # the other key is kept
+                        self.assertEqual(call("POST", "/api/settings", {"apiKeys": {"jpdb": "", "jiten": ""}})[0], 200)
+                        self.assertEqual((jiten.API_KEY, jpdb.API_KEY), ("", ""))
                     # Another website, or another device in LAN mode, may not change settings.
                     self.assertEqual(call("POST", "/api/settings", {"jiten": False}, {"Origin": "http://evil.example"})[0], 403)
                     with mock.patch.object(server.Handler, "from_this_computer", return_value=False):
@@ -237,86 +256,200 @@ class ServerConfigurationTests(unittest.TestCase):
         content_server.shutdown.assert_called_once()
 
 
-class DifficultyCacheTests(unittest.TestCase):
+JPDB_LIST = """<html><body><form><input name="q"></form><p>Showing 2 entries</p>
+<div><div><a href="/novel/7176/kino-no-tabi-the-beautiful-world-/stats">Statistics...</a></div>
+<div><div style="opacity: 0.5">Novel</div><h5 style="max-width: 30rem;">Kino no Tabi -the Beautiful World-</h5>
+<table class="cross-table"><tr><th>Length (in words)</th><td>154967</td></tr><tr><th>Unique words</th><td>10712</td></tr>
+<tr><th>Average difficulty</th><td>48/100</td></tr><tr><th>Peak difficulty (90th percentile)</th><td>59/100</td></tr>
+<tr><th>Characters</th><td>347673</td></tr><tr><th>Volumes</th><td>5</td></tr></table>
+<a href="/novel/7176/kino-no-tabi-the-beautiful-world-" class="outline">Show details...</a></div></div>
+<div><h5>Kino no Tabi Best Selection</h5><table><tr><th>Average difficulty</th><td>50/100</td></tr></table>
+<a href="/novel/9000/kino-no-tabi-best-selection" class="outline">Show details...</a></div>
+</body></html>"""
+
+
+def natively_item(title, media_type, level, url, volumes=1, series=True):
+    item = {"title": title, "mediaType": media_type, "libraryType": "books", "url": url, "numOfItems": volumes,
+            "itemType": "book_series" if series else "book", "rating": {"lvl": level, "lvlDescriptor": f"{level} (Upper Intermediate, ~JLPT N2)",
+                                                                          "temporary": False},
+            "reviewData": {"avgRating": 3.9}}
+    return {"widget": "series" if series else "book", "series" if series else "book": item}
+
+
+class LookupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.old_path = jiten.DIFFICULTY_CACHE_PATH
-        self.old_cache = jiten._difficulty_cache
-        jiten.DIFFICULTY_CACHE_PATH = os.path.join(self.temp.name, "cache.json")
-        jiten._difficulty_cache = None
+        patches = [mock.patch.object(lookups, "CACHE_PATH", os.path.join(self.temp.name, "lookup_cache.json")),
+                   mock.patch.object(lookups, "OLD_CACHE_PATH", os.path.join(self.temp.name, "difficulty_cache.json")),
+                   mock.patch.object(lookups, "_cache", None), mock.patch.object(lookups, "_busy", {}),
+                   mock.patch.dict(lookups.ENABLED, {"jiten": True, "natively": True, "jpdb": True}),
+                   mock.patch.object(jiten, "API_KEY", "")]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(self.temp.cleanup)
 
-    def tearDown(self):
-        jiten.DIFFICULTY_CACHE_PATH = self.old_path
-        jiten._difficulty_cache = self.old_cache
-        self.temp.cleanup()
+    def saved(self):
+        with open(lookups.CACHE_PATH, encoding="utf-8") as file:
+            return json.load(file)
 
     def test_parallel_lookups_preserve_all_entries(self):
-        with mock.patch.object(jiten, "jiten_search", return_value=[]):
+        with mock.patch.object(jiten, "search", return_value=None):
             with ThreadPoolExecutor(max_workers=8) as executor:
-                results = list(executor.map(jiten.get_difficulty,
+                results = list(executor.map(lambda title: lookups.lookup("jiten", "manga", title),
                                             [f"Test series {number}" for number in range(24)]))
-        self.assertEqual(results, [None] * 24)
-        with open(jiten.DIFFICULTY_CACHE_PATH, encoding="utf-8") as file:
-            cache = json.load(file)
-        self.assertEqual(len(cache), 24)
-        self.assertEqual(os.listdir(self.temp.name), ["cache.json"])
+        self.assertEqual([result["result"] for result in results], [None] * 24)
+        self.assertEqual(len(self.saved()), 24)
+        self.assertEqual(os.listdir(self.temp.name), ["lookup_cache.json"])
 
-    def test_unavailable_jiten_is_not_cached_as_a_missing_title(self):
+    def test_one_title_is_looked_up_once_and_retried_after_a_week(self):
+        with mock.patch.object(jiten, "search", return_value=None) as search:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(lambda _: lookups.lookup("jiten", "novel", "Same"), range(4)))
+            search.assert_called_once()
+            entry = self.saved()["jiten:novel:same"]
+            with mock.patch.object(lookups.time, "time", return_value=entry["at"] + lookups.RETRY_SECONDS + 1):
+                lookups.lookup("jiten", "novel", "Same")
+            self.assertEqual(search.call_count, 2)
+
+    def test_unavailable_site_is_not_cached_as_a_missing_title(self):
         with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
-            with self.assertRaises(jiten.JitenLookupError):
-                jiten.get_difficulty("Test series")
-        self.assertFalse(os.path.exists(jiten.DIFFICULTY_CACHE_PATH))
-        self.assertEqual(jiten._difficulty_cache, {})
+            for source in ("jiten", "natively", "jpdb"):
+                with self.assertRaises(lookups.Unavailable):
+                    lookups.lookup(source, "novel", "Test series")
+        self.assertFalse(os.path.exists(lookups.CACHE_PATH))
+
+    def test_offline_refresh_keeps_the_saved_answer(self):
+        found = {"deckId": 7, "url": "https://jiten.moe/decks/media/7/detail", "title": "Old", "difficulty": 2.0}
+        lookups.store("jiten:manga:old", {"source": "jiten", "at": 0, "link": None, "result": found,
+                                          "matcher": lookups.MATCHER_VERSION})
+        with mock.patch.object(jiten, "get", side_effect=web.LookupFailed("offline")):
+            answer = lookups.lookup("jiten", "manga", "Old")
+        self.assertEqual((answer["result"], answer["stale"]), (found, "offline"))
 
     def test_failed_cache_write_does_not_report_a_saved_result(self):
-        with mock.patch.object(jiten, "jiten_search", return_value=[]), \
-                mock.patch.object(jiten, "save_difficulty_cache", side_effect=OSError("read-only")):
+        with mock.patch.object(jiten, "search", return_value=None), \
+                mock.patch.object(lookups, "save_cache", side_effect=OSError("read-only")):
             with self.assertRaisesRegex(OSError, "read-only"):
-                jiten.get_difficulty("Test series")
-        self.assertEqual(jiten._difficulty_cache, {})
-
-    def test_title_variants_drop_publisher_labels_and_editions(self):
-        self.assertEqual(jiten.clean_title_variants("きょうの日はさようなら 完全版 (文春文庫)")[-1], "きょうの日はさようなら")
-        self.assertEqual(jiten.clean_title_variants("五人一役でも君が好き【電子特典付き】")[-1], "五人一役でも君が好き")
-        self.assertEqual(jiten.clean_title_variants("ごん狐"), ["ごん狐"])
-
-    def test_novel_lookup_keeps_only_novels_and_saves_the_summary(self):
-        urls = []
-
-        def fake_get(url):
-            urls.append(url)
-            if "/detail" in url:
-                return {"data": {"mainDeck": {"difficulty": 3, "difficultyRaw": 3.3, "description": "Kyon meets Haruhi."}}}
-            return {"suggestions": [{"deckId": 1, "originalTitle": "涼宮ハルヒの憂鬱", "mediaType": 9},
-                                    {"deckId": 2, "originalTitle": "涼宮ハルヒの憂鬱", "mediaType": 4}]}
-
-        with mock.patch.object(jiten, "http_get_json", side_effect=fake_get):
-            result = jiten.get_difficulty("涼宮ハルヒの憂鬱", "novel")
-        self.assertEqual((result["deckId"], result["difficultyRaw"], result["description"]),
-                         (2, 3.3, "Kyon meets Haruhi."))
-        self.assertIn("/media-deck/2/detail", urls[-1])
-        with open(jiten.DIFFICULTY_CACHE_PATH, encoding="utf-8") as file:
-            self.assertEqual(list(json.load(file)), ["novel:涼宮ハルヒの憂鬱"])
-
-    def test_entries_saved_without_a_summary_are_refreshed_once(self):
-        old = {"deckId": 7, "matchedTitle": "Old", "matchScore": 1.0, "difficulty": 2, "difficultyRaw": 2.0}
-        with open(jiten.DIFFICULTY_CACHE_PATH, "w", encoding="utf-8") as file:
-            json.dump({"manga:old": old}, file)
-        with mock.patch.object(jiten, "http_get_json", side_effect=jiten.JitenLookupError("offline")):
-            self.assertEqual(jiten.get_difficulty("Old"), old)
-        detail = {"data": {"mainDeck": {"difficulty": 2, "difficultyRaw": 2.4, "description": "Summary"}}}
-        with mock.patch.object(jiten, "http_get_json", return_value=detail) as get:
-            self.assertEqual(jiten.get_difficulty("Old"), {**old, "difficultyRaw": 2.4, "description": "Summary"})
-            self.assertEqual(jiten.get_difficulty("Old")["description"], "Summary")
-        get.assert_called_once()  # the saved deck's detail only: no new search, and none once complete
+                lookups.lookup("jiten", "manga", "Test series")
+        self.assertEqual(lookups._cache, {})
 
     def test_invalid_cache_is_reported_without_overwriting_it(self):
-        with open(jiten.DIFFICULTY_CACHE_PATH, "w", encoding="utf-8") as file:
+        with open(lookups.CACHE_PATH, "w", encoding="utf-8") as file:
             file.write("{broken")
-        with self.assertRaisesRegex(OSError, "Could not read difficulty cache"):
-            jiten.get_difficulty("Test series")
-        with open(jiten.DIFFICULTY_CACHE_PATH, encoding="utf-8") as file:
+        with self.assertRaisesRegex(OSError, "Could not read the lookup cache"):
+            lookups.lookup("jiten", "manga", "Test series")
+        with open(lookups.CACHE_PATH, encoding="utf-8") as file:
             self.assertEqual(file.read(), "{broken")
+
+    def test_matches_saved_by_the_old_difficulty_cache_are_refreshed_not_searched(self):
+        with open(lookups.OLD_CACHE_PATH, "w", encoding="utf-8") as file:
+            json.dump({"manga:old": {"deckId": 7, "difficulty": 2}, "novel:missing": None}, file)
+        with mock.patch.object(jiten, "fetch", return_value={"deckId": 7, "url": "u", "title": "Old"}) as fetch, \
+                mock.patch.object(jiten, "search") as search:
+            self.assertEqual(lookups.lookup("jiten", "manga", "Old")["result"]["title"], "Old")
+        fetch.assert_called_once_with(7)
+        search.assert_not_called()
+
+    def test_jiten_keeps_only_the_media_type_and_reads_volumes_and_statistics(self):
+        def fake_get(path):
+            if "search-suggestions" in path:
+                return {"suggestions": [{"deckId": 1, "originalTitle": "涼宮ハルヒの憂鬱", "mediaType": 9},
+                                        {"deckId": 2, "originalTitle": "涼宮ハルヒの憂鬱", "romajiTitle": "Suzumiya Haruhi no Yuuutsu", "mediaType": 4}]}
+            if "/stats" in path:
+                return {"milestones": {"90%": 3000, "95%": 6000}}
+            return {"data": {"mainDeck": {"originalTitle": "涼宮ハルヒの憂鬱", "romajiTitle": "Suzumiya Haruhi no Yuuutsu", "difficultyRaw": 3.31, "description": "Kyon meets Haruhi.",
+                                          "characterCount": 100000, "uniqueWordCount": 9000, "childrenDeckCount": 2, "coverage": 80},
+                             "subDecks": [{"deckId": 21, "originalTitle": "Volume 1", "difficultyRaw": 3.1, "characterCount": 50000},
+                                          {"deckId": 22, "originalTitle": "第2巻", "difficultyRaw": 3.5}]}}
+        with mock.patch.object(jiten, "get", side_effect=fake_get):
+            result = lookups.lookup("jiten", "novel", "涼宮ハルヒの憂鬱 (角川スニーカー文庫)")["result"]
+        self.assertEqual((result["deckId"], result["difficulty"], result["description"], result["wordsFor"]),
+                         (2, 3.31, "Kyon meets Haruhi.", {"90%": 3000, "95%": 6000}))
+        self.assertEqual([(volume["number"], volume["deckId"]) for volume in result["volumes"]], [(1, 21), (2, 22)])
+        self.assertIsNone(result["coverage"])  # coverage is only the viewer's own with an API key
+        self.assertEqual(result["titles"], ["涼宮ハルヒの憂鬱", "Suzumiya Haruhi no Yuuutsu"])
+
+    def test_natively_prefers_the_main_series_of_the_right_media_type(self):
+        def fake(url):
+            query = urllib.parse.unquote(url.split("q=", 1)[1])
+            items = [natively_item("キノの旅", "manga_series", 27, "/series/manga/", 5)]
+            if query == "キノの旅":
+                items.append(natively_item("キノの旅", "light_novel_series", 30, "/series/main/", 24))
+            items.append(natively_item("キノの旅 the Beautiful World Best Selection", "light_novel_series", 29, "/series/best/", 3))
+            return items
+        with mock.patch.object(web, "get_json", side_effect=fake):
+            result = natively.search("キノの旅 the Beautiful World", "novel")
+            manga = natively.search("キノの旅", "manga")
+        self.assertEqual((result["url"], result["level"]), ("https://learnnatively.com/series/main/", 30))
+        self.assertEqual(manga["url"], "https://learnnatively.com/series/manga/")
+
+    def test_natively_link_reads_the_level_from_the_page_title(self):
+        page = "<html><head><title>ある日突然、ギャルの許嫁ができた | L27</title></head></html>"
+        with mock.patch.object(web, "get_text", return_value=page) as get:
+            result = natively.from_link("https://learnnatively.com/series/4a5a9622b3/?tab=books", "novel")
+        get.assert_called_once_with("https://learnnatively.com/series/4a5a9622b3/")
+        self.assertEqual((result["title"], result["level"]), ("ある日突然、ギャルの許嫁ができた", 27))
+        with self.assertRaisesRegex(ValueError, "learnnatively.com"):
+            natively.from_link("https://example.com/series/1/", "novel")
+
+    def test_jpdb_reads_its_difficulty_list_and_has_no_manga(self):
+        self.assertEqual([(title, url, data.get("difficulty")) for title, url, data in jpdb.entries(JPDB_LIST)],
+                         [("Kino no Tabi -the Beautiful World-", "https://jpdb.io/novel/7176/kino-no-tabi-the-beautiful-world-", 48),
+                          ("Kino no Tabi Best Selection", "https://jpdb.io/novel/9000/kino-no-tabi-best-selection", 50)])
+        with mock.patch.object(web, "get_text", return_value=JPDB_LIST):
+            result = jpdb.search("Kino no Tabi: the Beautiful World", "novel")
+            by_japanese_name = jpdb.search("キノの旅", "novel", aliases=("Kino no Tabi -the Beautiful World-",))
+        self.assertEqual((result["difficulty"], result["peak"], result["characters"], result["volumes"]), (48, 59, 347673, 5))
+        self.assertEqual(by_japanese_name["url"], "https://jpdb.io/novel/7176/kino-no-tabi-the-beautiful-world-")
+        self.assertIsNone(jpdb.search("よつばと！", "manga"))
+
+    def test_a_link_fixes_a_match_until_it_is_removed(self):
+        with mock.patch.object(jiten, "search", return_value=None) as search, \
+                mock.patch.object(jiten, "fetch", return_value={"deckId": 5, "url": "u", "title": "Right"}) as fetch:
+            self.assertIsNone(lookups.lookup("jiten", "manga", "Mine")["result"])
+            answer = lookups.set_link("jiten", "manga", "Mine", "https://jiten.moe/decks/media/5/detail")
+            self.assertEqual((answer["result"]["title"], answer["manual"]), ("Right", True))
+            fetch.assert_called_once_with(5)
+            self.assertTrue(lookups.lookup("jiten", "manga", "Mine")["manual"])
+            none = lookups.set_link("jiten", "manga", "Mine", "none")
+            self.assertEqual((none["result"], none["manual"]), (None, True))
+            with mock.patch.object(lookups.time, "time", return_value=time.time() + 365 * 86400):
+                self.assertTrue(lookups.lookup("jiten", "manga", "Mine")["manual"])  # never searched again
+            self.assertEqual(search.call_count, 1)
+            self.assertFalse(lookups.set_link("jiten", "manga", "Mine", "")["manual"])  # "" searches again
+            self.assertEqual(search.call_count, 2)
+        with self.assertRaisesRegex(ValueError, "jiten.moe"):
+            lookups.set_link("jiten", "manga", "Mine", "https://jpdb.io/novel/1/x")
+
+    def test_link_endpoint_is_for_this_computer_only(self):
+        with server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler) as httpd:
+            thread = threading.Thread(target=httpd.serve_forever)
+            thread.start()
+            try:
+                def post(body):
+                    connection = http.client.HTTPConnection(*httpd.server_address)
+                    connection.request("POST", "/api/lookup-link", json.dumps(body), {"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    result = response.status, response.read()
+                    connection.close()
+                    return result
+                request = {"source": "jiten", "type": "manga", "title": "Mine", "link": "none"}
+                self.assertEqual(post(request)[0], 200)
+                self.assertEqual(post({**request, "link": "https://example.com"})[0], 400)
+                with mock.patch.object(server.Handler, "from_this_computer", return_value=False), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(post(request)[0], 403)
+            finally:
+                httpd.shutdown()
+                thread.join()
+
+    def test_title_variants_drop_publisher_labels_editions_and_hashes(self):
+        self.assertEqual(titles.clean_title_variants("きょうの日はさようなら 完全版 (文春文庫)")[-1], "きょうの日はさようなら")
+        self.assertEqual(titles.clean_title_variants("五人一役でも君が好き【電子特典付き】")[-1], "五人一役でも君が好き")
+        self.assertIn("ある日突然、ギャルの許嫁ができた", titles.clean_title_variants("ある日突然、ギャルの許嫁ができた [d5af847c]"))
+        self.assertEqual(titles.clean_title_variants("キノの旅 the Beautiful World")[-1], "キノの旅")
+        self.assertEqual(titles.clean_title_variants("ごん狐"), ["ごん狐"])
 
 
 if __name__ == "__main__":

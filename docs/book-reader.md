@@ -4,9 +4,20 @@ Start the existing server as usual, then open `http://127.0.0.1:8421/books/`.
 If you specify a different port, use that port instead. The Manga link returns
 to the existing manga directory.
 
-The library scans the `books` folder set in `config.json` and its subfolders for EPUB files. Click a
-card to see its Jiten difficulty and summary, then open a book there to read its original text and formatting, select a section, or use the
-Previous and Next buttons. Reading position is stored in this browser's local
+The library has two shelves: **Your books**, the EPUB files in the book folder
+chosen in **Settings** (and its subfolders), and **Graded readers**, the
+stories that come with Hondana (turn them off in Settings). Click a card to see
+its difficulty on Jiten, Natively and jpdb, how many of its words you know, its
+most frequent words you don't know yet, and its summary; then open a book there
+to read its original text and formatting, select a section, or use the
+Previous and Next buttons. **Sort** orders each shelf by name, by what you
+read last, by the share of words you know, or by difficulty on one of the
+sites.
+
+The word list in the panel leaves out names, prefixes and suffixes (達, 的)
+and words you know or are learning; words in blue already wait in Anki as new
+cards. Point Yomitan at a word to look it up and add a card before you start
+reading. Katakana names UniDic doesn't know (キノ) can still appear. Reading position is stored in this browser's local
 storage; clearing browser data or switching browsers will clear or separate it.
 
 To organize a series, put its EPUBs together in a folder named after the
@@ -15,6 +26,8 @@ series, for example `Books\My Series\My Series Vol 1.epub` and
 each volume. Books directly in the book folder can also be grouped by EPUB
 series metadata (EPUB 3 or Calibre) or matching numbered titles or filenames.
 Volume numbers are used for ordering; otherwise titles are sorted naturally.
+A volume card in the panel shows that volume's Jiten difficulty, when Jiten has
+the series by volume, and how many of its words you know.
 Moving an existing EPUB changes its library identity and its saved progress
 will no longer be associated with the new path.
 Use **Settings** to switch between the publisher's layout, vertical
@@ -65,7 +78,11 @@ running with AnkiConnect at the address in `anki.url` (it is only read), and the
 optional packages as generated furigana. Words are matched by dictionary form,
 so 行った matches a card for 行く, a card in kana matches the kanji spelling, and
 a card for a longer word or expression (自転車, 気がつく) is coloured as one
-word. If Anki is closed, the last word list the server saw is used.
+word. If Anki is closed, the last word list the server saw is used. The list
+is read again every ten minutes; after adding cards with Yomitan, press
+**Refresh from Anki** under the Anki colours setting to recolour the page at
+once. With a jpdb API key in Settings, the words in your jpdb decks count as
+well.
 
 Use **Notes** to save notes at the current reading location. Select a passage
 before adding a note to include an excerpt; notes can be edited, deleted, or
@@ -79,6 +96,8 @@ automatically selected loopback port to let browser extensions access text
 without giving books access to the reader. Restart the server after updating
 the reader and reload the page.
 
-To use another folder, set `books` in `config.json` or start the server with
-`--books "D:\Books"`; see the [project README](../README.md). DRM-protected EPUBs
+To use another folder, choose it in **Settings**, set `books` in `config.json`,
+or start the server with `--books "D:\Books"`; see the
+[project README](../README.md). Graded readers keep their notes and progress
+when the book folder changes. DRM-protected EPUBs
 and formats other than EPUB are not supported.

@@ -39,9 +39,16 @@ let editingNote = null;
 let draftLocation = null;
 let draftInitialText = '';
 let openItem = null;
-const difficulty = new Map(); // library item key -> {deckId, value, description} | null
-let easiestFirst = false;
-try { easiestFirst = localStorage.getItem('book-library-sort') === 'difficulty'; } catch (error) { /* storage blocked: default sort */ }
+const infos = new Map();    // library item key -> {jiten, natively, jpdb}: answers of /api/lookup
+const coverage = new Map(); // book id -> /api/book-known-words answer, or null if it failed
+const shelfNames = { books: 'Your books', graded: 'Graded readers' };
+const sortModes = ['name', 'recent', 'known', 'jiten', 'natively', 'jpdb'];
+let sortMode = 'name';
+let bookFolder = { path: '', missing: false };
+try {
+  const saved = localStorage.getItem('book-library-sort');
+  sortMode = saved === 'difficulty' ? 'jiten' : sortModes.includes(saved) ? saved : 'name';
+} catch (error) { /* storage blocked: default sort */ }
 
 function reportStorageError(message) {
   const status = $('library-status');
@@ -284,12 +291,12 @@ function buildLibraryItems() {
   const items = [];
   for (const book of books) {
     if (!book.seriesKey) {
-      items.push({ title: book.title, books: [book], key: null });
+      items.push({ title: book.title, lookupTitle: book.lookupTitle || book.title, books: [book], key: null, shelf: book.shelf });
       continue;
     }
     let group = grouped.get(book.seriesKey);
     if (!group) {
-      group = { title: book.series, books: [], key: book.seriesKey };
+      group = { title: book.series, lookupTitle: book.series, books: [], key: book.seriesKey, shelf: book.shelf };
       grouped.set(book.seriesKey, group);
       items.push(group);
     }
@@ -310,10 +317,35 @@ const itemKey = item => item.key || 'book:' + item.books[0].id;
 
 const itemByline = item => item.key ? item.books.length + (item.books.length === 1 ? ' volume' : ' volumes') : item.books[0].author || 'Unknown author';
 
+// Graded readers are this project's own stories: no site has them.
+const looksUp = item => item.shelf !== 'graded';
+
+// Running words known over the item's books whose words have been counted; null until one has.
+function knownShare(item) {
+  let words = 0, known = 0;
+  for (const book of item.books) {
+    const counts = coverage.get(book.id)?.book;
+    if (counts?.words) {
+      words += counts.words;
+      known += counts.known;
+    }
+  }
+  return words ? Math.round(100 * known / words) : null;
+}
+
 function libraryDescription(item) {
-  const text = itemByline(item);
-  const d = difficulty.get(itemKey(item));
-  return d ? text + ' · Jiten ' + d.value + '/5' : text;
+  const known = knownShare(item);
+  const extra = [Lookups.badges(infos.get(itemKey(item))), known === null ? '' : known + '% known'].filter(Boolean).join(' · ');
+  return itemByline(item) + (extra ? '\n' + extra : '');
+}
+
+// Volume cards in the panel: the volume's own Jiten difficulty and known words, when there are any.
+function volumeDescription(item, book) {
+  const jiten = infos.get(itemKey(item))?.jiten?.result;
+  const volume = book.volume !== null ? jiten?.volumes?.find(entry => entry.number === book.volume) : null;
+  const counts = coverage.get(book.id)?.book;
+  return [volume?.difficulty != null ? `Jiten ${volume.difficulty.toFixed(1)}` : '',
+          counts?.words ? `${Math.round(100 * counts.known / counts.words)}% known` : ''].filter(Boolean).join(' · ') || book.title;
 }
 
 function sectionScrollFraction(progress) {
@@ -438,27 +470,89 @@ function closeSeries(clearSelection = true) {
   $('series-scrim').classList.remove('open');
   if (clearSelection) {
     const key = openItem && itemKey(openItem);
-    const trigger = Array.from($('book-grid').querySelectorAll('button')).find(card => card.dataset.seriesKey === key);
+    const trigger = Array.from($('shelves').querySelectorAll('.book-card')).find(card => card.dataset.seriesKey === key);
     selectedSeries = null;
     if (trigger) trigger.focus();
   }
 }
 
-function fillSeriesInfo() {
-  const d = difficulty.get(itemKey(openItem));
-  const line = $('series-difficulty');
-  if (d) {
-    const link = document.createElement('a');
-    link.href = 'https://jiten.moe/decks/media/' + d.deckId + '/stats';
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.textContent = 'Jiten difficulty ' + d.value + '/5 ↗';
-    line.replaceChildren(link);
-  } else line.textContent = difficulty.has(itemKey(openItem)) ? 'Difficulty unknown' : 'Looking up difficulty…';
+function fillSeriesInfo(force = false) {
+  const item = openItem;
+  const found = infos.get(itemKey(item)) || {};
+  $('series-badges').textContent = Lookups.badges(found);
+  const known = knownShare(item);
+  $('series-known-line').textContent = known === null ? '' : `${known}% of the words known`;
+  // A link being typed into an open "Wrong title?" form is kept until it is saved.
+  if (!force && $('lookup-section').querySelector('.lookup-fix[open]')) {
+    // keep the section as it is
+  } else if (looksUp(item)) {
+    Lookups.renderSection($('lookup-section'), 'novel', item.lookupTitle, found, (source, info) => {
+      infos.set(itemKey(item), { ...(infos.get(itemKey(item)) || {}), [source]: info });
+      updateCard(item);
+      if (openItem === item) fillSeriesInfo(true);
+    });
+  } else {
+    $('lookup-section').hidden = true;
+  }
+  fillKnownSection(item);
   // The EPUB's own blurb is usually Japanese; Jiten's comes from AniList in English.
-  const summary = openItem.books[0].description || d?.description || '';
+  const summary = item.books[0].description || found.jiten?.result?.description || '';
   $('series-summary').textContent = summary;
   $('summary-section').hidden = !summary;
+}
+
+function fillKnownSection(item) {
+  const section = $('known-section');
+  // One book's counts, or for a series the volume shown first that has counts.
+  const book = item.books.find(entry => coverage.get(entry.id)?.book?.words) || item.books[0];
+  const data = coverage.get(book.id);
+  section.replaceChildren();
+  section.hidden = !data;
+  if (!data) return;
+  const heading = document.createElement('h3');
+  heading.textContent = item.books.length > 1 ? `Known words · ${book.volume !== null ? 'Volume ' + book.volume : book.title}` : 'Known words';
+  section.append(heading);
+  const line = document.createElement('p');
+  line.className = 'p-line';
+  if (!data.book) {
+    line.textContent = data.ankiOffline ? 'Anki is not running and no word list is saved yet: start Anki to see how many of these words you know.' : 'The words could not be counted.';
+    section.append(line);
+    return;
+  }
+  const c = data.book;
+  const percent = (part, whole) => whole ? Math.round(100 * part / whole) : 0;
+  line.textContent = `${percent(c.known, c.words)}% of ${c.words.toLocaleString()} running words · ` +
+    `${percent(c.uniqueKnown, c.unique)}% of ${c.unique.toLocaleString()} different words` +
+    (c.learning ? ` · ${percent(c.learning, c.words)}% still learning` : '');
+  const note = document.createElement('p');
+  note.className = 'p-line';
+  note.textContent = `Compared with ${data.knownWords.toLocaleString()} known words (interval ${data.knownInterval} days or more)` +
+    (data.ankiOffline ? `; a source is offline, so this uses the list from ${new Date(data.wordsAt * 1000).toLocaleString()}` : '') +
+    '. Particles and auxiliaries count as known.';
+  section.append(line, note);
+  if (data.toLearn?.length) {
+    const title = document.createElement('h3');
+    title.textContent = 'Most frequent words you don’t know yet';
+    const hint = document.createElement('p');
+    hint.className = 'p-line';
+    hint.textContent = 'Look them up with Yomitan to add cards before you start. Blue words already wait in Anki as new cards.';
+    const list = document.createElement('ol');
+    list.className = 'to-learn';
+    list.lang = 'ja';
+    for (const word of data.toLearn) {
+      const entry = document.createElement('li');
+      entry.dataset.status = word.status === 'new' ? 'new' : 'none';
+      const text = document.createElement('span');
+      text.className = 'to-learn-word';
+      text.textContent = word.word;
+      const count = document.createElement('small');
+      count.textContent = `×${word.count}`;
+      count.title = `${word.count} times in this book; read ${word.reading}`;
+      entry.append(text, count);
+      list.append(entry);
+    }
+    section.append(title, hint, list);
+  }
 }
 
 function openSeries(item) {
@@ -468,16 +562,8 @@ function openSeries(item) {
   $('series-count').textContent = itemByline(item);
   $('volumes-heading').textContent = item.key ? 'Volumes' : 'Book';
   $('series-cover').replaceChildren(makeCover(item.books[0]));
-  fillSeriesInfo();
-  const grid = $('volume-grid');
-  grid.replaceChildren();
-  for (const book of item.books) {
-    const volumeLabel = book.volume !== null ? 'Volume ' + book.volume : book.title;
-    grid.append(makeCard(book, volumeLabel, book.title, () => {
-      closeSeries(false);
-      openBook(book, true);
-    }));
-  }
+  fillSeriesInfo(true);
+  fillVolumes(item);
   $('series-panel').hidden = false;
   $('series-panel').classList.add('open');
   $('series-panel').setAttribute('aria-hidden', 'false');
@@ -485,24 +571,55 @@ function openSeries(item) {
   $('series-close').focus();
 }
 
-function renderLibrary() {
-  const query = $('search').value.trim().toLocaleLowerCase();
-  const filtered = libraryItems.filter(item => (item.title + ' ' + item.books.map(book => book.title + ' ' + book.author).join(' ')).toLocaleLowerCase().includes(query));
-  // Unrated items sort last (the Jiten scale tops out at 5); ties keep name order.
-  const level = item => Number(difficulty.get(itemKey(item))?.value ?? 9);
-  if (easiestFirst) filtered.sort((a, b) => level(a) - level(b));
-  const last = books.map(book => ({ book, at: getProgress(book)?.at || 0 })).sort((a, b) => b.at - a.at)[0];
-  $('continue').hidden = !last?.at;
-  if (last?.at) {
-    $('continue').textContent = `Continue reading: ${last.book.title} · ${bookProgress(last.book).percent}%`;
-    $('continue').onclick = () => {
-      selectedSeries = last.book.seriesKey;
-      openBook(last.book, true);
-    };
-  }
-  const grid = $('book-grid');
+function fillVolumes(item) {
+  const grid = $('volume-grid');
   grid.replaceChildren();
-  for (const item of filtered) {
+  for (const book of item.books) {
+    const volumeLabel = book.volume !== null ? 'Volume ' + book.volume : book.title;
+    const card = makeCard(book, volumeLabel, volumeDescription(item, book), () => {
+      closeSeries(false);
+      openBook(book, true);
+    });
+    card.dataset.bookId = book.id;
+    grid.append(card);
+  }
+}
+
+function updateCard(item) {
+  const card = Array.from($('shelves').querySelectorAll('.book-card')).find(element => element.dataset.seriesKey === itemKey(item));
+  if (card) card.querySelector('.card-author').textContent = libraryDescription(item);
+  if (openItem === item && !$('series-panel').hidden) {
+    for (const volume of $('volume-grid').querySelectorAll('.book-card')) {
+      const book = item.books.find(entry => entry.id === volume.dataset.bookId);
+      if (book) volume.querySelector('.card-author').textContent = volumeDescription(item, book);
+    }
+  }
+}
+
+function sortItems(items) {
+  const lastRead = item => Math.max(0, ...item.books.map(book => getProgress(book)?.at || 0));
+  const value = item => {
+    if (sortMode === 'known') return -(knownShare(item) ?? -1);
+    if (sortMode === 'recent') return -lastRead(item);
+    // Unrated items sort last; ties keep name order.
+    return Lookups.level(sortMode, infos.get(itemKey(item))?.[sortMode]) ?? Infinity;
+  };
+  return sortMode === 'name' ? items : [...items].sort((a, b) => value(a) - value(b));
+}
+
+function renderShelf(shelf, items) {
+  const section = document.createElement('section');
+  section.className = 'shelf';
+  const heading = document.createElement('h2');
+  heading.className = 'shelf-title';
+  heading.textContent = shelfNames[shelf];
+  const count = document.createElement('small');
+  const volumes = items.reduce((sum, item) => sum + item.books.length, 0);
+  count.textContent = `${volumes} ${volumes === 1 ? 'book' : 'books'}`;
+  heading.append(' ', count);
+  const grid = document.createElement('div');
+  grid.className = 'book-grid';
+  for (const item of items) {
     const first = item.books[0];
     const volumeProgress = item.key ? item.books.map(bookProgress) : null;
     const progress = volumeProgress ? {
@@ -513,37 +630,141 @@ function renderLibrary() {
     card.dataset.seriesKey = itemKey(item);
     grid.append(card);
   }
-  if (!filtered.length && books.length && !$('library-status').dataset.error) $('library-status').textContent = 'No books match your search.';
-  else if (!$('library-status').dataset.error) $('library-status').textContent = books.length ? '' : 'No EPUBs found in the book folder.';
+  section.append(heading, grid);
+  return section;
 }
 
-async function loadDifficulty() {
-  const todo = libraryItems.filter(item => !difficulty.has(itemKey(item)));
+function emptyBookShelf() {
+  const section = document.createElement('section');
+  section.className = 'shelf';
+  const heading = document.createElement('h2');
+  heading.className = 'shelf-title';
+  heading.textContent = shelfNames.books;
+  const text = document.createElement('p');
+  text.className = 'status';
+  const link = document.createElement('a');
+  link.href = '/settings/';
+  link.textContent = 'Settings';
+  if (bookFolder.missing) text.append(`The book folder ${bookFolder.path} does not exist. Choose another in `, link, '.');
+  else if (bookFolder.path) text.append(`No EPUBs in ${bookFolder.path} yet.`);
+  else text.append('Choose the folder with your EPUBs in ', link, ' to see them here.');
+  section.append(heading, text);
+  return section;
+}
+
+function renderLibrary() {
+  const query = $('search').value.trim().toLocaleLowerCase();
+  const filtered = libraryItems.filter(item => (item.title + ' ' + item.books.map(book => book.title + ' ' + book.author).join(' ')).toLocaleLowerCase().includes(query));
+  const last = books.map(book => ({ book, at: getProgress(book)?.at || 0 })).sort((a, b) => b.at - a.at)[0];
+  $('continue').hidden = !last?.at;
+  if (last?.at) {
+    $('continue').textContent = `Continue reading: ${last.book.title} · ${bookProgress(last.book).percent}%`;
+    $('continue').onclick = () => {
+      selectedSeries = last.book.seriesKey;
+      openBook(last.book, true);
+    };
+  }
+  const shelves = $('shelves');
+  shelves.replaceChildren();
+  for (const shelf of Object.keys(shelfNames)) {
+    const items = sortItems(filtered.filter(item => item.shelf === shelf));
+    if (items.length) shelves.append(renderShelf(shelf, items));
+    else if (shelf === 'books' && !query) shelves.append(emptyBookShelf());
+  }
+  if (!filtered.length && books.length && !$('library-status').dataset.error) $('library-status').textContent = 'No books match your search.';
+  else if (!$('library-status').dataset.error) $('library-status').textContent = '';
+}
+
+let resortTimer;
+function resortSoon() {
+  // Sorting by a value still arriving: redraw once a batch of answers is in, not after each one.
+  if (sortMode === 'name' || sortMode === 'recent' || !$('series-panel').hidden) return;
+  clearTimeout(resortTimer);
+  resortTimer = setTimeout(renderLibrary, 800);
+}
+
+function loadLookups() {
+  const todo = libraryItems.filter(item => looksUp(item) && !infos.has(itemKey(item)));
+  for (const item of todo) infos.set(itemKey(item), {});
+  return Lookups.lookupAll(todo, 'novel', item => item.lookupTitle, (item, source, info) => {
+    infos.set(itemKey(item), { ...infos.get(itemKey(item)), [source]: info });
+    updateCard(item);
+    if (openItem === item && !$('series-panel').hidden) fillSeriesInfo();
+    if (sortMode === source) resortSoon();
+  });
+}
+
+async function loadCoverage() {
+  const todo = books.filter(book => !coverage.has(book.id));
   let next = 0;
   async function worker() {
     while (next < todo.length) {
-      const item = todo[next++];
+      const book = todo[next++];
       let value = null;
       try {
-        const response = await fetch('/api/difficulty?type=novel&title=' + encodeURIComponent(item.title));
-        const data = response.ok ? await response.json() : null;
-        const level = typeof data?.difficultyRaw === 'number' ? data.difficultyRaw.toFixed(1) : data?.difficulty;
-        if (Number.isInteger(data?.deckId) && level != null) {
-          value = { deckId: data.deckId, value: level, description: typeof data.description === 'string' ? data.description : '' };
-        }
-      } catch (error) { /* no match or lookup failed: shown as unknown */ }
-      difficulty.set(itemKey(item), value);
-      const card = Array.from($('book-grid').children).find(element => element.dataset.seriesKey === itemKey(item));
-      if (card) card.querySelector('.card-author').textContent = libraryDescription(item);
-      if (openItem === item && !$('series-panel').hidden) fillSeriesInfo();
+        const response = await fetch('/api/book-known-words?book=' + encodeURIComponent(book.id));
+        value = response.ok ? await response.json() : null;
+      } catch (error) { /* server stopped: shown without known words */ }
+      coverage.set(book.id, value);
+      const item = libraryItems.find(entry => entry.books.includes(book));
+      if (!item) continue;
+      updateCard(item);
+      if (openItem === item && !$('series-panel').hidden) {
+        fillKnownSection(item);
+        const known = knownShare(item);
+        $('series-known-line').textContent = known === null ? '' : `${known}% of the words known`;
+      }
+      if (sortMode === 'known') resortSoon();
     }
   }
-  await Promise.all(Array.from({ length: 3 }, worker));
-  if (easiestFirst && todo.length) renderLibrary();
+  // Two at a time: a book seen for the first time takes a second or two to count.
+  await Promise.all(Array.from({ length: 2 }, worker));
 }
 
-function updateSortButton() {
-  $('sort').textContent = easiestFirst ? 'Sort: easiest first' : 'Sort: name';
+// Graded readers were named by their path alone while they were the book folder; their saved progress
+// and notes move to the names they have now, unless one of your own books has that path.
+function migrateGradedKeys() {
+  try {
+    if (localStorage.getItem('book-reader-graded-migrated')) return;
+    const own = new Set(books.filter(book => book.shelf === 'books').map(book => book.id));
+    for (const book of books) {
+      if (book.shelf !== 'graded') continue;
+      const old = book.id.slice('graded:'.length);
+      if (own.has(old)) continue;
+      for (const prefix of [storagePrefix, notesPrefix]) {
+        const saved = localStorage.getItem(prefix + old);
+        if (saved !== null && localStorage.getItem(prefix + book.id) === null) {
+          localStorage.setItem(prefix + book.id, saved);
+          localStorage.removeItem(prefix + old);
+        }
+      }
+    }
+    localStorage.setItem('book-reader-graded-migrated', '1');
+  } catch (error) { /* storage blocked: nothing saved to move */ }
+}
+
+async function refreshWords() {
+  const button = $('refresh-words');
+  button.disabled = true;
+  $('words-status').textContent = 'Reading your cards…';
+  try {
+    const response = await fetch('/api/words/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const summary = await response.json();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    ankiOffline = summary.offline;
+    const offline = Object.entries(summary.sources || {}).filter(([, source]) => source.offline).map(([name]) => name === 'anki' ? 'Anki' : 'jpdb');
+    $('words-status').textContent = summary.available
+      ? `${summary.counts.known.toLocaleString()} known, ${summary.counts.learning.toLocaleString()} learning, ${summary.counts.new.toLocaleString()} new` +
+        (offline.length ? ` · ${offline.join(' and ')} offline` : '')
+      : 'Anki is not running.';
+    coverage.clear(); // the counts change with the cards
+    loadCoverage();
+    if (frameReady) frame.contentWindow.postMessage({ type: 'book-reader-recolour' }, contentOrigin);
+  } catch (error) {
+    $('words-status').textContent = 'Could not refresh: ' + error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function showSection(index, progress = null, fragment = '') {
@@ -717,7 +938,8 @@ function showLibrary(updateHistory) {
 
 function restoreLocation() {
   const id = new URLSearchParams(location.search).get('book');
-  const book = books.find(item => item.id === id);
+  // A link saved while the graded readers were the book folder names one without its prefix.
+  const book = books.find(item => item.id === id) || books.find(item => item.shelf === 'graded' && item.id === 'graded:' + id);
   if (book) {
     selectedSeries = book.seriesKey;
     closeSeries(false);
@@ -732,12 +954,12 @@ function restoreLocation() {
 $('back').addEventListener('click', () => {
   if (canLeaveDraft()) showLibrary(true);
 });
-$('sort').addEventListener('click', () => {
-  easiestFirst = !easiestFirst;
-  try { localStorage.setItem('book-library-sort', easiestFirst ? 'difficulty' : 'name'); } catch (error) { /* choice lasts for this page only */ }
-  updateSortButton();
+$('sort').addEventListener('change', () => {
+  sortMode = sortModes.includes($('sort').value) ? $('sort').value : 'name';
+  try { localStorage.setItem('book-library-sort', sortMode); } catch (error) { /* choice lasts for this page only */ }
   renderLibrary();
 });
+$('refresh-words').addEventListener('click', refreshWords);
 $('series-close').addEventListener('click', () => closeSeries());
 $('series-scrim').addEventListener('click', () => closeSeries());
 $('series-panel').addEventListener('keydown', event => {
@@ -835,7 +1057,7 @@ window.addEventListener('pagehide', saveProgress);
 
 loadSettings();
 updateSettingsControls();
-updateSortButton();
+$('sort').value = sortMode;
 fetch('/api/books').then(response => {
   if (!response.ok) throw new Error('Server returned ' + response.status);
   return response.json();
@@ -844,6 +1066,8 @@ fetch('/api/books').then(response => {
       String(data.contentPort) === location.port) throw new Error('Isolated EPUB content server is unavailable');
   contentOrigin = 'http://' + location.hostname + ':' + data.contentPort;
   books = data.books;
+  bookFolder = { path: data.bookFolder || '', missing: !!data.bookFolderMissing };
+  migrateGradedKeys();
   libraryItems = buildLibraryItems();
   const issues = data.errors.map(error => error.file + ': ' + error.error);
   for (const book of books) {
@@ -854,7 +1078,8 @@ fetch('/api/books').then(response => {
     $('library-status').textContent = 'Book library warnings:\n' + issues.join('\n');
   }
   restoreLocation();
-  loadDifficulty();
+  loadLookups();
+  loadCoverage();
 }).catch(error => {
   $('library-status').textContent = 'Could not load the book library: ' + error.message;
 });

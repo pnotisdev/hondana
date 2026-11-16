@@ -461,6 +461,9 @@
       restore(position);
       report();
       updateWords(event.data.settings);
+    } else if (event.data.type === 'book-reader-recolour') {
+      wordPieces.clear(); // the word lists changed: ask the server again
+      if (wordsOn) colourWords();
     } else if (event.data.type === 'book-reader-page' &&
                (event.data.direction === -1 || event.data.direction === 1)) {
       turnPage(event.data.direction);

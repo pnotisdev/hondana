@@ -242,6 +242,11 @@ test('words are coloured by Anki status across text nodes, skipping furigana', a
   assert.equal(frame.sent.at(-1).type, 'words-stats');
   assert.deepEqual(Array.from(frame.sent.at(-1).counts), [0, 0, 1, 3]);
   assert.deepEqual(Array.from(frame.sent.at(-1).unique), [0, 0, 1, 3]);
+  // After the word lists are read again (a card was just added), the same text is asked for again.
+  walk.push(...nodes);
+  frame.handlers.window.message({ source: frame.parent, data: { type: 'book-reader-recolour' } });
+  assert.equal(frame.sent.at(-1).type, 'words-request');
+  assert.deepEqual(Array.from(frame.sent.at(-1).texts), ['音で満ちている。', '猫']);
   frame.handlers.window.message({
     source: frame.parent, data: { type: 'book-reader-settings', settings: { anki: 'off' } },
   });

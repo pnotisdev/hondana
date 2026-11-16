@@ -1,11 +1,18 @@
 {
   "manga": "~/Manga",
-  "books": "graded-readers",
+  "books": "",
+  "gradedReaders": true,
   "port": 8421,
   "lan": false,
   "allowHosts": [],
   "skipMangaFolders": [],
   "jiten": true,
+  "natively": true,
+  "jpdb": true,
+  "apiKeys": {
+    "jiten": "",
+    "jpdb": ""
+  },
   "anki": {
     "url": "http://127.0.0.1:8765",
     "search": "",

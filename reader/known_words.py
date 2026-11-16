@@ -1,4 +1,4 @@
-"""Known-word coverage of manga volumes: Mokuro OCR text against the words reviewed in Anki."""
+"""Known words from Anki (and jpdb, with an API key), and their coverage of manga volumes and EPUBs."""
 
 import hashlib
 import html
@@ -10,18 +10,21 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 
-from . import PROJECT_DIR, config, furigana
+from . import PROJECT_DIR, config, furigana, jpdb, web
 
 STATUSES = ("new", "learning", "known")  # worst first; a word takes the best status of its cards
+JPDB_KEY = ""
 
 
-def configure(anki):
+def configure(anki, jpdb_key=""):
     """Use the "anki" settings from config.load(); config.DEFAULTS says what each one means."""
-    global ANKI_URL, ANKI_SEARCH, KNOWN_INTERVAL, WORD_FIELDS, WORD_LIST_FIELDS, WORD_CARDS_ONLY
+    global ANKI_URL, ANKI_SEARCH, KNOWN_INTERVAL, WORD_FIELDS, WORD_LIST_FIELDS, WORD_CARDS_ONLY, JPDB_KEY
     ANKI_URL, ANKI_SEARCH, KNOWN_INTERVAL = anki["url"], anki["search"], anki["knownInterval"]
     WORD_FIELDS = dict(anki["wordFields"])
     WORD_LIST_FIELDS, WORD_CARDS_ONLY = set(anki["wordListFields"]), set(anki["wordCardsOnly"])
+    JPDB_KEY = jpdb.API_KEY = jpdb_key
 
 
 configure(config.DEFAULTS["anki"])
@@ -45,9 +48,12 @@ def anki_queries():
     }
 ANKI_REFRESH_SECONDS = 600
 ANKI_RETRY_SECONDS = 30  # while Anki is offline
-READ_ONLY_ACTIONS = {"findNotes", "notesInfo", "findCards", "cardsInfo"}  # nothing here writes to Anki
+# Nothing here writes to Anki.
+READ_ONLY_ACTIONS = {"findNotes", "notesInfo", "findCards", "cardsInfo", "modelNames", "modelFieldNames",
+                     "deckNames", "version"}
 CACHE_DIR = os.path.join(PROJECT_DIR, "known_words_cache")
 CACHE_VERSION = 1  # bump when tokenizing changes, so cached volumes are redone
+BOOK_CACHE_VERSION = 2  # the same for EPUBs
 MERGE_LIMIT = 6  # tokens tried as one word when a card spells it that way (よろしくお願いします)
 
 SKIPPED_POS = {"補助記号", "記号", "空白"}
@@ -148,36 +154,108 @@ def word_sets(saved, offline):
     return result
 
 
-_anki_lock = threading.Lock()
-_anki_state = {"words": None, "checked": 0.0}
-
-
-def refresh_anki_words():
-    words = _anki_state["words"]
+def fetch_jpdb_words():
+    """The words in your jpdb decks, in the same form as fetch_anki_words()."""
     try:
-        saved = fetch_anki_words()
-    except AnkiOffline:
-        words = words and {**words, "offline": True}
+        found = jpdb.deck_words()
+    except web.LookupFailed as error:
+        raise AnkiOffline(str(error)) from error
+    result, better = {"at": time.time()}, set()
+    for status in reversed(STATUSES):
+        result[status] = sorted(found[status] - better)
+        better |= found[status]
+    return result
+
+
+# Where the words come from: Anki always, jpdb with an API key. Each source's last list is saved, so
+# one that is offline still counts with the words it had.
+SOURCES = {"anki": (lambda: fetch_anki_words(), "anki-words.json"), "jpdb": (lambda: fetch_jpdb_words(), "jpdb-words.json")}
+
+
+def active_sources():
+    return ["anki", "jpdb"] if JPDB_KEY else ["anki"]
+
+
+def ping(source):
+    if source == "anki":
+        anki("findNotes", query="nid:1")  # a quick question, only to learn whether Anki is running
     else:
         try:
-            write_json(os.path.join(CACHE_DIR, "anki-words.json"), saved)
-        except OSError:
-            pass  # the list still works until the server stops
-        words = word_sets(saved, offline=False)
-    _anki_state["words"] = words
+            jpdb.ping()
+        except web.LookupFailed as error:
+            raise AnkiOffline(str(error)) from error
+
+
+_anki_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+_anki_state = {"words": None, "checked": 0.0, "saved": {}, "offline": {}, "errors": {}}
+
+
+def valid_saved(saved):
+    return (isinstance(saved, dict) and isinstance(saved.get("at"), (int, float)) and
+            isinstance(saved.get("known"), list) and all(isinstance(saved.get(status, []), list) for status in STATUSES))
+
+
+def merged_words():
+    """word_sets() of every active source's saved list, a word taking its best status; None if none is saved."""
+    sources = [name for name in active_sources() if _anki_state["saved"].get(name)]
+    if not sources:
+        return None
+    combined, better = {"at": min(_anki_state["saved"][name]["at"] for name in sources)}, set()
+    for status in reversed(STATUSES):
+        words = set().union(*(_anki_state["saved"][name].get(status, ()) for name in sources))
+        combined[status] = sorted(words - better)
+        better |= words
+    offline = any(_anki_state["offline"].get(name, True) for name in active_sources())
+    words = word_sets(combined, offline=offline)
+    words["sources"] = {name: {"offline": _anki_state["offline"].get(name, True),
+                               "error": _anki_state["errors"].get(name),
+                               "at": (_anki_state["saved"].get(name) or {}).get("at"),
+                               "counts": {status: len((_anki_state["saved"].get(name) or {}).get(status, ()))
+                                          for status in STATUSES}}
+                        for name in active_sources()}
     return words
 
 
+def refresh_anki_words():
+    """Read every active source again; keep a source's saved list while it is offline."""
+    with _refresh_lock:
+        for name in active_sources():
+            fetch, filename = SOURCES[name]
+            try:
+                saved = fetch()
+            except AnkiOffline as error:
+                _anki_state["offline"][name], _anki_state["errors"][name] = True, str(error)
+                continue
+            _anki_state["saved"][name] = saved
+            _anki_state["offline"][name], _anki_state["errors"][name] = False, None
+            try:
+                write_json(os.path.join(CACHE_DIR, filename), saved)
+            except OSError:
+                pass  # the list still works until the server stops
+        words = merged_words()
+        _anki_state["words"] = words
+        return words
+
+
 def forget_anki_words():
-    """Fetch the word list again on next use, as after changing the AnkiConnect settings."""
+    """Fetch the word lists again on next use, as after changing the AnkiConnect or jpdb settings."""
     with _anki_lock:
-        _anki_state.update(words=None, checked=0.0)
+        _anki_state.update(words=None, checked=0.0, saved={}, offline={}, errors={})
+
+
+def refresh_now():
+    """Read the sources now, as after adding a card; the merged words, or None if there are none."""
+    with _anki_lock:
+        _anki_state["checked"] = time.time()
+    return refresh_anki_words()
 
 
 def anki_words():
-    """Words from Anki by status ("known", "learning", "new"), refreshed every few minutes.
+    """Words by status ("known", "learning", "new") from Anki and jpdb, refreshed every few minutes.
 
-    While Anki is not running, the last saved list is returned marked offline, or None if there is none.
+    While a source is offline its last saved list is used and the result is marked offline; None if
+    nothing has been saved yet.
     """
     with _anki_lock:
         words = _anki_state["words"]
@@ -186,20 +264,75 @@ def anki_words():
             return words
         _anki_state["checked"] = time.time()
         if words is None:
-            try:
-                # After a restart the list saved by the last run shows at once.
-                words = word_sets(read_json(os.path.join(CACHE_DIR, "anki-words.json")), offline=False)
-                anki("findNotes", query="nid:1")  # a quick question, only to learn whether Anki is running
-            except AnkiOffline:
-                words["offline"] = True
-            except (AttributeError, TypeError, KeyError):
-                return refresh_anki_words()  # no usable saved list: wait for Anki
+            # After a restart the lists saved by the last run show at once.
+            for name in active_sources():
+                saved = read_json(os.path.join(CACHE_DIR, SOURCES[name][1]))
+                if valid_saved(saved):
+                    _anki_state["saved"][name] = saved
+                try:
+                    ping(name)
+                    _anki_state["offline"][name] = False
+                except AnkiOffline as error:
+                    _anki_state["offline"][name], _anki_state["errors"][name] = True, str(error)
+            words = merged_words()
+            if words is None:
+                return refresh_anki_words()  # nothing saved: wait for the sources
             _anki_state["words"] = words
-            if words["offline"]:
+            if all(_anki_state["offline"].get(name) for name in active_sources()):
                 return words
     # Reading every note takes seconds, so a list already in hand is refreshed behind this request.
     threading.Thread(target=refresh_anki_words, daemon=True).start()
     return words
+
+
+def word_summary(words):
+    """What the settings page and the readers show about the word lists."""
+    if words is None:
+        return {"available": False, "offline": True, "knownInterval": KNOWN_INTERVAL,
+                "sources": {name: {"offline": True, "error": _anki_state["errors"].get(name)} for name in active_sources()}}
+    return {"available": True, "offline": words["offline"], "at": words["at"], "knownInterval": KNOWN_INTERVAL,
+            "counts": {status: len(words[status]) for status in STATUSES}, "sources": words.get("sources", {})}
+
+
+def note_types():
+    """Anki note types that have notes, with their fields, a few sample values and the field likely holding the word."""
+    result = []
+    for name in sorted(anki("modelNames"), key=str.casefold):
+        ids = anki("findNotes", query=f'"note:{name}"')
+        if not ids:
+            continue
+        fields = anki("modelFieldNames", modelName=name)
+        notes = anki("notesInfo", notes=ids[:5])
+        values = {field: [clean_word(html.unescape(re.sub(r"<[^>]*>", "", ((note.get("fields") or {}).get(field) or {})
+                                                          .get("value", ""))))[:40] for note in notes]
+                  for field in fields}
+        result.append({"name": name, "notes": len(ids), "fields": fields,
+                       "samples": {field: [value for value in sample if value][:3] for field, sample in values.items()},
+                       "suggested": suggest_field(fields, values),
+                       "japanese": any(JAPANESE.search(value) for sample in values.values() for value in sample)})
+    present = {entry["name"] for entry in result}
+    # The note types in use first, then those with Japanese in them; the rest last.
+    result.sort(key=lambda entry: (entry["name"] not in WORD_FIELDS, not entry["japanese"]))
+    return {"noteTypes": result, "missing": sorted(set(WORD_FIELDS) - present),
+            "decks": sorted(anki("deckNames"), key=str.casefold)}
+
+
+WORD_FIELD_NAMES = ["expression", "word", "vocabkanji", "vocabulary-kanji", "vocab", "vocabulary", "jlab-lemma",
+                    "key", "target word", "front"]
+
+
+def suggest_field(fields, values):
+    """The field that most likely holds one Japanese word: a usual name, else the one with short Japanese values."""
+    by_name = {field.casefold(): field for field in fields}
+    for name in WORD_FIELD_NAMES:
+        if name in by_name and any(JAPANESE.search(value) for value in values[by_name[name]]):
+            return by_name[name]
+
+    def score(field):
+        sample = [value for value in values[field] if value]
+        return sum(bool(JAPANESE.search(value)) and len(value) <= 12 for value in sample) / max(1, len(sample))
+    best = max(fields, key=score, default=None)
+    return best if best and score(best) >= 0.5 else None
 
 
 def word_key(word):
@@ -255,6 +388,51 @@ def volume_types(path):
         write_json(cache_path, {"stamp": stamp, "types": result})
     except OSError:
         pass  # recounted next time
+    return result
+
+
+def book_types(path, paragraphs):
+    """(word types, names) of an EPUB at path, whose text paragraphs() yields; cached until the file changes.
+
+    Names are the lemmas UniDic tags as proper nouns, prefixes or suffixes (達, 的), which are left out of
+    the words to learn.
+    """
+    stat = os.stat(path)
+    cache_path = os.path.join(CACHE_DIR, "book-" + hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest() + ".json")
+    stamp = [BOOK_CACHE_VERSION, CACHE_VERSION, stat.st_mtime_ns, stat.st_size]
+    cached = read_json(cache_path)
+    if isinstance(cached, dict) and cached.get("stamp") == stamp:
+        return [tuple(entry) for entry in cached["types"]], set(cached["names"])
+    types, names = {}, set()
+    for text in paragraphs():
+        for *key, feature in counted_words(text):
+            types[tuple(key)] = types.get(tuple(key), 0) + 1
+            if feature.pos2 == "固有名詞" or feature.pos1 in ("接尾辞", "接頭辞"):
+                names.add(key[0])
+    result = [(*key, count) for key, count in types.items()]
+    try:
+        write_json(cache_path, {"stamp": stamp, "types": result, "names": sorted(names)})
+    except OSError:
+        pass  # recounted next time
+    return result, names
+
+
+def words_to_learn(types, words, names=(), limit=40):
+    """The most frequent words not known yet: [{"word", "reading", "count", "status"}], status "new" for a waiting card."""
+    word_status = word_state(words)
+    found = {}
+    for lemma, base, reading, always_known, count in types:
+        state = word_status(lemma, base, reading, always_known)
+        if state in ("known", "learning") or lemma in names:
+            continue
+        entry = found.setdefault((lemma, reading), {"forms": {}, "reading": reading, "count": 0, "status": state})
+        entry["count"] += count
+        entry["forms"][base] = entry["forms"].get(base, 0) + count
+    result = []
+    for entry in sorted(found.values(), key=lambda entry: -entry["count"])[:limit]:
+        # The spelling the book uses most: UniDic's lemma of する is 為る.
+        forms = entry.pop("forms")
+        result.append({"word": max(forms, key=forms.get), **entry})
     return result
 
 

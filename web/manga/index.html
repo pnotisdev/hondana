@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Manga · Hondana</title>
+<link rel="stylesheet" href="/books/lookups.css">
+<script src="/books/lookups.js"></script>
 <style>
   :root {
     --bg: #060606;
@@ -38,6 +40,7 @@
   #search::placeholder { color: var(--text-dim); }
   .ghost { font: inherit; font-size: 12px; color: var(--text-dim); background: none; border: 0; cursor: pointer; padding: 6px; }
   .ghost:hover { color: var(--text); }
+  #sortSel { font: inherit; font-size: 12px; color: var(--text-dim); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 8px; cursor: pointer; }
 
   /* page */
   .page { max-width: 1200px; margin: 0 auto; padding: 28px 20px 80px; }
@@ -114,7 +117,10 @@
   <a class="tab" href="/settings/">Settings</a>
   <span class="spacer"></span>
   <input id="search" type="text" placeholder="Search manga">
-  <button class="ghost" id="sortBtn" title="Switch between sorting by name and by Jiten difficulty"></button>
+  <select id="sortSel" aria-label="Sort manga" title="Order of the series in each row">
+    <option value="name">Sort: name</option><option value="known">Sort: most words known</option>
+    <option value="jiten">Sort: Jiten, easiest first</option><option value="natively">Sort: Natively level</option>
+  </select>
   <button class="ghost" id="refreshBtn">Refresh</button>
 </div></div>
 
@@ -137,7 +143,7 @@ const VOL_EXTS = [".cbz", ".zip", ".html", ".mokuro"];
 
 let library = [];            // [{name, vols}]
 let selected = null;         // series name shown in the panel
-const difficulty = new Map(); // series -> {deckId, value, description} | null
+const infos = new Map();      // series -> {jiten, natively}: answers of /api/lookup
 const knownWords = new Map(); // series -> /api/known-words result | null
 
 function stemOf(name) {
@@ -193,8 +199,7 @@ function stats(vols) {
 }
 
 function diffText(name) {
-  const d = difficulty.get(name);
-  return d ? `Jiten ${d.value}/5` : "";
+  return Lookups.badges(infos.get(name));
 }
 
 const percent = (part, whole) => whole ? Math.round(part / whole * 100) : 0;
@@ -215,11 +220,12 @@ function knownSection(k) {
     <div class="p-line">Compared with ${k.knownWords.toLocaleString()} words at an Anki interval of ${k.knownInterval ?? 21} days or more${offline}. Particles and auxiliaries count as known.</div></div>`;
 }
 
-let easiestFirst = false;
-try { easiestFirst = localStorage.getItem("manga-sort") === "difficulty"; } catch (e) { /* storage blocked: default sort */ }
-function updateSortButton() {
-  document.getElementById("sortBtn").textContent = easiestFirst ? "Sort: easiest first" : "Sort: name";
-}
+const SORTS = ["name", "known", "jiten", "natively"];
+let sortMode = "name";
+try {
+  const saved = localStorage.getItem("manga-sort");
+  sortMode = saved === "difficulty" ? "jiten" : SORTS.includes(saved) ? saved : "name";
+} catch (e) { /* storage blocked: default sort */ }
 
 function renderCard({ name, vols }) {
   const { total, ready, pct } = stats(vols);
@@ -243,9 +249,15 @@ function renderCard({ name, vols }) {
 function renderRows() {
   const q = document.getElementById("search").value.trim().toLowerCase();
   const items = library.filter(s => !q || s.name.toLowerCase().includes(q));
-  // Unrated series sort last (the Jiten scale tops out at 5); ties keep name order.
-  const level = s => Number(difficulty.get(s.name)?.value ?? 9);
-  if (easiestFirst) items.sort((a, b) => level(a) - level(b));
+  // Unrated series sort last; ties keep name order.
+  const value = s => {
+    if (sortMode === "known") {
+      const c = knownWords.get(s.name)?.series;
+      return c?.words ? -c.known / c.words : 1;
+    }
+    return Lookups.level(sortMode, infos.get(s.name)?.[sortMode]) ?? Infinity;
+  };
+  if (sortMode !== "name") items.sort((a, b) => value(a) - value(b));
   const groups = [
     ["Ready to read", "Every volume processed", items.filter(s => s.vols.length && stats(s.vols).ready === s.vols.length)],
     ["In progress", "Some volumes still need OCR", items.filter(s => { const t = stats(s.vols); return t.ready > 0 && t.ready < t.total; })],
@@ -289,13 +301,16 @@ function fillPanel() {
   const pre = s.vols.length > 1 ? longestCommonPrefixLen(s.vols.map(v => v.stem)) : 0;
   const k = knownWords.get(s.name);
   const volKnown = new Map((k?.volumes || []).map(v => [v.name, v]));
+  const found = infos.get(s.name) || {};
+  const jitenVolumes = found.jiten?.result?.volumes || [];
   const volsHtml = s.vols.map(v => {
     const label = escapeHtml(v.stem.slice(pre).trim() || v.stem);
     const kv = volKnown.get(v.stem);
     const known = kv?.words ? `<small title="Running words you know">${percent(kv.known, kv.words)}%</small>` : "";
-    return v.ready ? `<a class="vol" href="${v.htmlHref}" target="_blank" rel="noopener">${label}${known}</a>` : `<span class="vol" title="Not processed">${label}</span>`;
+    const jv = jitenVolumes.find(entry => entry.number === volumeNumber(v.stem));
+    const tip = jv?.difficulty != null ? `Jiten difficulty of this volume: ${jv.difficulty.toFixed(1)}` : "";
+    return v.ready ? `<a class="vol" href="${v.htmlHref}" target="_blank" rel="noopener" title="${escapeHtml(tip)}">${label}${known}</a>` : `<span class="vol" title="Not processed">${label}</span>`;
   }).join("");
-  const d = difficulty.get(s.name);
   const first = s.vols.find(v => v.ready);
   document.getElementById("panelBody").innerHTML = `
     <div class="p-top">
@@ -303,40 +318,49 @@ function fillPanel() {
       <div>
         <div class="p-title">${escapeHtml(s.name)}</div>
         <div class="p-line">${ready} of ${total} volumes ready</div>
-        <div class="p-line">${d ? `<a href="https://jiten.moe/decks/media/${d.deckId}/stats" target="_blank" rel="noopener">Jiten difficulty ${escapeHtml(String(d.value))}/5 ↗</a>` : "Difficulty unknown"}</div>
+        <div class="p-line">${escapeHtml(Lookups.badges(found))}</div>
         <div class="p-bar"><div class="ratio-fill" style="width:${pct}%;height:100%"></div></div>
       </div>
     </div>
     ${knownSection(k)}
-    ${d?.description ? `<div class="p-section"><h3>Summary</h3><p class="summary">${escapeHtml(d.description)}</p></div>` : ""}
+    <div class="p-section lookups" id="lookupSection" hidden></div>
+    ${found.jiten?.result?.description ? `<div class="p-section"><h3>Summary</h3><p class="summary">${escapeHtml(found.jiten.result.description)}</p></div>` : ""}
     <div class="p-section"><h3>Volumes</h3><div class="vol-grid">${volsHtml || '<span class="p-line">None</span>'}</div></div>`;
   document.getElementById("panelFoot").innerHTML =
     `<a class="btn${first ? "" : " off"}" ${first ? `href="${first.htmlHref}" target="_blank" rel="noopener"` : ""}>Start reading</a>`;
+  Lookups.renderSection(document.getElementById("lookupSection"), "manga", s.name, found, (source, info) => {
+    infos.set(s.name, { ...infos.get(s.name), [source]: info });
+    const card = document.querySelector(`.card[data-name="${CSS.escape(s.name)}"] .diff`);
+    if (card) card.textContent = diffText(s.name) ? " · " + diffText(s.name) : "";
+    if (selected === s.name) fillPanel();
+  });
 }
 
-async function loadDifficultyBadges() {
-  const todo = library.map(s => s.name).filter(n => !difficulty.has(n));
-  let i = 0;
-  async function worker() {
-    while (i < todo.length) {
-      const name = todo[i++];
-      let val = null;
-      try {
-        const res = await fetch("/api/difficulty?title=" + encodeURIComponent(name));
-        const data = res.ok ? await res.json() : null;
-        if (data && Number.isInteger(data.deckId)) {
-          const v = typeof data.difficultyRaw === "number" ? data.difficultyRaw.toFixed(1) : data.difficulty;
-          if (v != null) val = { deckId: data.deckId, value: v, description: typeof data.description === "string" ? data.description : "" };
-        }
-      } catch (e) { /* no match / lookup failed */ }
-      difficulty.set(name, val);
-      const card = document.querySelector(`.card[data-name="${CSS.escape(name)}"] .diff`);
-      if (card && val) card.textContent = " · " + diffText(name);
-      if (name === selected) fillPanel();
+// The number of a volume's file or folder name ("Yotsubato v03" is 3), to find its Jiten volume.
+function volumeNumber(stem) {
+  const numbers = stem.match(/\d+(?:\.\d+)?/g);
+  return numbers ? Number(numbers[numbers.length - 1]) : null;
+}
+
+// Redraws the open panel for new information, unless a link is being typed into its "Wrong title?" form.
+function refreshPanel(name) {
+  if (name === selected && !document.querySelector("#lookupSection .lookup-fix[open]")) fillPanel();
+}
+
+let resortTimer;
+function loadLookups() {
+  const todo = library.map(s => s.name).filter(name => !infos.has(name));
+  for (const name of todo) infos.set(name, {});
+  return Lookups.lookupAll(todo, "manga", name => name, (name, source, info) => {
+    infos.set(name, { ...infos.get(name), [source]: info });
+    const card = document.querySelector(`.card[data-name="${CSS.escape(name)}"] .diff`);
+    if (card) card.textContent = diffText(name) ? " · " + diffText(name) : "";
+    refreshPanel(name);
+    if (sortMode === source) {
+      clearTimeout(resortTimer);
+      resortTimer = setTimeout(renderRows, 800);
     }
-  }
-  await Promise.all(Array.from({ length: 3 }, worker));
-  if (easiestFirst && todo.length) renderRows();
+  });
 }
 
 async function loadKnownWords() {
@@ -354,7 +378,7 @@ async function loadKnownWords() {
       knownWords.set(name, value);
       const el = document.querySelector(`.card[data-name="${CSS.escape(name)}"] .known`);
       if (el) el.textContent = knownText(name);
-      if (name === selected) fillPanel();
+      refreshPanel(name);
     }
   }
   // Two at a time: a volume seen for the first time takes about a second to count.
@@ -380,7 +404,7 @@ async function build() {
     document.getElementById("totalStat").textContent = `${library.length} series · ${ready} / ${total} volumes ready`;
     renderRows();
     if (selected) fillPanel();
-    loadDifficultyBadges();
+    loadLookups();
     loadKnownWords();
   } catch (error) {
     librarySignature = ""; // the next successful load replaces this message
@@ -391,13 +415,13 @@ async function build() {
 
 document.getElementById("search").addEventListener("input", renderRows);
 document.getElementById("refreshBtn").addEventListener("click", () => { librarySignature = ""; build(); });
-document.getElementById("sortBtn").addEventListener("click", () => {
-  easiestFirst = !easiestFirst;
-  try { localStorage.setItem("manga-sort", easiestFirst ? "difficulty" : "name"); } catch (e) { /* choice lasts for this page only */ }
-  updateSortButton();
+const sortSel = document.getElementById("sortSel");
+sortSel.value = sortMode;
+sortSel.addEventListener("change", () => {
+  sortMode = SORTS.includes(sortSel.value) ? sortSel.value : "name";
+  try { localStorage.setItem("manga-sort", sortMode); } catch (e) { /* choice lasts for this page only */ }
   renderRows();
 });
-updateSortButton();
 document.getElementById("panelClose").addEventListener("click", closePanel);
 document.getElementById("scrim").addEventListener("click", closePanel);
 document.addEventListener("keydown", e => { if (e.key === "Escape") closePanel(); });

@@ -15,7 +15,12 @@ from html.parser import HTMLParser
 from . import PROJECT_DIR, config
 
 
-BOOK_ROOT = os.path.expanduser(config.DEFAULTS["books"])  # set from config.json when the server starts
+BOOK_ROOT = ""  # your book folder ("" for none), set from config.json when the server starts
+GRADED_ROOT = os.path.join(PROJECT_DIR, "graded-readers")  # the graded readers that come with the project
+SHOW_GRADED = True
+# Books are named by their path in their folder; graded readers get this prefix, so both folders can
+# hold the same path and a graded reader keeps its name when the book folder changes.
+GRADED_PREFIX = "graded:"
 APP_DIR = os.path.join(PROJECT_DIR, "web", "books")
 HTML_TYPES = {"application/xhtml+xml", "text/html"}
 
@@ -66,6 +71,51 @@ class CharacterCounter(HTMLParser):
             self.count += len(COUNTED_CHARACTERS.findall(data))
 
 
+class TextExtractor(CharacterCounter):
+    """The reading text of a section, one string per paragraph, without furigana or markup."""
+    BLOCKS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "tr", "td", "th", "dt", "dd",
+              "blockquote", "figcaption", "section", "article", "body", "hr"}
+
+    def __init__(self):
+        super().__init__()
+        self.paragraphs, self.current = [], []
+
+    def end_paragraph(self):
+        text = "".join(self.current).strip()
+        if text:
+            self.paragraphs.append(text)
+        self.current = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.rsplit(":", 1)[-1] in self.BLOCKS:
+            self.end_paragraph()
+        super().handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag.rsplit(":", 1)[-1] in self.BLOCKS:
+            self.end_paragraph()
+        super().handle_endtag(tag)
+
+    def handle_data(self, data):
+        if not self.skip_depth:
+            self.current.append(data)
+
+    def close(self):
+        super().close()
+        self.end_paragraph()
+
+
+def book_paragraphs(name):
+    """Each paragraph of a book's reading text, in reading order."""
+    book = read_book(name)
+    with zipfile.ZipFile(book_path(name)) as archive:
+        for section in book["sections"]:
+            extractor = TextExtractor()
+            extractor.feed(archive.read(section["path"]).decode("utf-8-sig", errors="replace"))
+            extractor.close()
+            yield from extractor.paragraphs
+
+
 def count_book_characters(name):
     book = read_book(name)
     sections = []
@@ -100,8 +150,33 @@ def archive_path(base, href):
     return result
 
 
+def same_folder(a, b):
+    try:
+        return bool(a and b) and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def shelves():
+    """(shelf, prefix of its book names, folder) for each folder of books shown in the library."""
+    result = []
+    own = BOOK_ROOT and os.path.isdir(BOOK_ROOT) and not same_folder(BOOK_ROOT, GRADED_ROOT)
+    if own:
+        result.append(("books", "", BOOK_ROOT))
+    # A books setting pointing at the graded readers (the old default) shows them once, as graded readers.
+    if os.path.isdir(GRADED_ROOT) and (SHOW_GRADED or same_folder(BOOK_ROOT, GRADED_ROOT)):
+        result.append(("graded", GRADED_PREFIX, GRADED_ROOT))
+    return result
+
+
 def book_path(name):
-    root = os.path.realpath(BOOK_ROOT)
+    if name.startswith(GRADED_PREFIX):
+        root, name = GRADED_ROOT, name[len(GRADED_PREFIX):]
+    elif BOOK_ROOT:
+        root = BOOK_ROOT
+    else:
+        raise ValueError("Book not found")
+    root = os.path.realpath(root)
     path = os.path.realpath(os.path.join(root, name))
     if (os.path.commonpath([root, path]) != root or
             not path.lower().endswith(".epub") or not os.path.isfile(path)):
@@ -159,27 +234,31 @@ def standalone_volume(value):
     return float(match.group(1)) if match else None
 
 
-def annotate_series(books):
+def annotate_series(books, prefix=""):
+    """Add volume, series and seriesKey; prefix is the shelf's prefix of book names, left out of series names."""
     filename_groups = {}
     for book in books:
         series_title, series_position = book.pop("_series_metadata")
-        filename = os.path.splitext(posixpath.basename(book["id"]))[0]
+        name = book["id"][len(prefix):]
+        filename = os.path.splitext(posixpath.basename(name))[0]
         title_base, title_number = volume_name(book["title"])
         file_base, file_number = volume_name(filename)
         book["volume"] = volume_number(series_position)
         if book["volume"] is None:
             book["volume"] = title_number if title_number is not None else file_number
-        if book["volume"] is None and (series_title or posixpath.dirname(book["id"])):
+        if book["volume"] is None and (series_title or posixpath.dirname(name)):
             book["volume"] = standalone_volume(filename)
         book["series"] = None
         book["seriesKey"] = None
-        if posixpath.dirname(book["id"]):
-            folder = posixpath.dirname(book["id"])
+        # The title to look up online: without the volume number, which Jiten and the others leave out.
+        book["lookupTitle"] = series_title or title_base or book["title"]
+        if posixpath.dirname(name):
+            folder = posixpath.dirname(name)
             book["series"] = posixpath.basename(folder)
-            book["seriesKey"] = "folder:" + folder
+            book["seriesKey"] = prefix + "folder:" + folder
         elif series_title:
             book["series"] = series_title
-            book["seriesKey"] = "metadata:" + unicodedata.normalize("NFKC", series_title).casefold()
+            book["seriesKey"] = prefix + "metadata:" + unicodedata.normalize("NFKC", series_title).casefold()
         elif title_base or file_base:
             candidate = title_base or file_base
             key = unicodedata.normalize("NFKC", candidate).casefold()
@@ -189,7 +268,7 @@ def annotate_series(books):
             continue
         for book, title in candidates:
             book["series"] = title
-            book["seriesKey"] = "filename:" + key
+            book["seriesKey"] = prefix + "filename:" + key
 
 
 def read_book(name):
@@ -309,6 +388,8 @@ def handle_request(handler, parsed):
             send_bytes(handler, f.read(), "text/html; charset=utf-8")
         return True
     static = {"/books/app.js": ("app.js", "text/javascript; charset=utf-8"),
+              "/books/lookups.js": ("lookups.js", "text/javascript; charset=utf-8"),
+              "/books/lookups.css": ("lookups.css", "text/css; charset=utf-8"),
               "/books/style.css": ("style.css", "text/css; charset=utf-8")}
     if parsed.path in static:
         name, content_type = static[parsed.path]
@@ -317,21 +398,23 @@ def handle_request(handler, parsed):
         return True
     if parsed.path == "/api/books":
         books, errors = [], []
-        if not os.path.isdir(BOOK_ROOT):
-            handler.send_error(500, "Book folder does not exist")
-            return True
-        for directory, _, files in os.walk(BOOK_ROOT):
-            for filename in files:
-                if not filename.lower().endswith(".epub"):
-                    continue
-                name = os.path.relpath(os.path.join(directory, filename), BOOK_ROOT).replace(os.sep, "/")
-                try:
-                    books.append(read_book(name))
-                except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
-                    errors.append({"file": name, "error": str(exc)})
-        annotate_series(books)
+        for shelf, prefix, root in shelves():
+            found = []
+            for directory, _, files in os.walk(root):
+                for filename in files:
+                    if not filename.lower().endswith(".epub"):
+                        continue
+                    name = prefix + os.path.relpath(os.path.join(directory, filename), root).replace(os.sep, "/")
+                    try:
+                        found.append({**read_book(name), "shelf": shelf})
+                    except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+                        errors.append({"file": name, "error": str(exc)})
+            annotate_series(found, prefix)
+            books += found
         books.sort(key=lambda book: book["title"].casefold())
+        own = "" if same_folder(BOOK_ROOT, GRADED_ROOT) else BOOK_ROOT  # the old default is no folder of your own
         send_json(handler, {"books": books, "errors": errors,
+                            "bookFolder": own, "bookFolderMissing": bool(own) and not os.path.isdir(own),
                             "contentPort": getattr(handler.server, "epub_content_port", None)})
         return True
     if parsed.path == "/api/book-character-count":

@@ -1,0 +1,19 @@
+/* Jiten, Natively and jpdb rows in the manga and book panels (lookups.js). */
+.lookup-row { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 13px; line-height: 1.5; }
+.lookup-row:first-of-type { border-top: 0; padding-top: 0; }
+.lookup-source { color: var(--text-dim); font-weight: 600; }
+.lookup-body { min-width: 0; overflow-wrap: anywhere; }
+.lookup-body a { color: var(--text); }
+.lookup-details { color: var(--text-dim); font-size: 12.5px; }
+.lookup-fix { margin-top: 4px; font-size: 12px; color: var(--text-dim); }
+.lookup-fix summary { cursor: pointer; width: max-content; }
+.lookup-fix summary:hover { color: var(--text); }
+.lookup-fix form { margin-top: 8px; display: grid; gap: 8px; }
+.lookup-fix input { font: inherit; width: 100%; color: var(--text); background: var(--bg-raised); border: 1px solid #333; border-radius: var(--radius); padding: 7px 9px; }
+.lookup-buttons { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.lookup-buttons .secondary { font: inherit; padding: 6px 10px; color: var(--text); background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
+.lookup-buttons .ghost { font: inherit; padding: 4px 0; color: var(--text-dim); background: none; border: 0; cursor: pointer; }
+.lookup-buttons .ghost:hover, .lookup-buttons a:hover { color: var(--text); }
+.lookup-buttons a { color: var(--text-dim); }
+.lookup-status { margin: 0; color: #ff8a80; }
+.lookup-status:empty { display: none; }

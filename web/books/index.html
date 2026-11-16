@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Books · Hondana</title>
   <link rel="stylesheet" href="/books/style.css">
+  <link rel="stylesheet" href="/books/lookups.css">
+  <script src="/books/lookups.js" defer></script>
   <script src="/books/app.js" defer></script>
 </head>
 <body>
@@ -13,14 +15,18 @@
     <nav aria-label="Libraries"><a class="tab" href="/">Manga</a><a class="tab active" href="/books/" aria-current="page">Books</a><a class="tab" href="/settings/">Settings</a></nav>
     <span class="spacer"></span>
     <label class="search"><span class="visually-hidden">Search books</span><input id="search" type="search" placeholder="Search books"></label>
-    <button id="sort" class="ghost" title="Switch between sorting by name and by Jiten difficulty"></button>
+    <label class="sort"><span class="visually-hidden">Sort books</span><select id="sort" title="Order of the books on each shelf">
+      <option value="name">Sort: name</option><option value="recent">Sort: recently read</option>
+      <option value="known">Sort: most words known</option><option value="jiten">Sort: Jiten, easiest first</option>
+      <option value="natively">Sort: Natively level</option><option value="jpdb">Sort: jpdb, easiest first</option>
+    </select></label>
   </div></header>
   <main class="page">
     <section id="library">
       <h1>Books</h1>
       <button id="continue" class="secondary continue" hidden></button>
       <p id="library-status" class="status" role="status">Loading books…</p>
-      <div id="book-grid" class="book-grid"></div>
+      <div id="shelves"></div>
     </section>
     <section id="reader" hidden>
       <div class="reader-toolbar">
@@ -69,6 +75,7 @@
             <label class="setting">Anki colours
               <select id="setting-anki"><option value="off">Off</option><option value="on">Colour words by their Anki status</option></select>
             </label>
+            <div class="setting-row"><button id="refresh-words" class="secondary" title="Read your cards again, as after adding cards with Yomitan">Refresh from Anki</button><span id="words-status" class="drawer-hint" role="status"></span></div>
             <label class="setting">Page color
               <select id="setting-theme"><option value="paper">Warm paper</option><option value="light">White</option><option value="dark">Dark</option><option value="original">Publisher's colors</option></select>
             </label>
@@ -108,8 +115,10 @@
     <div class="panel-body">
       <div class="p-top">
         <div id="series-cover"></div>
-        <div><h2 id="series-title" class="p-title"></h2><p id="series-count" class="p-line"></p><p id="series-difficulty" class="p-line"></p></div>
+        <div><h2 id="series-title" class="p-title"></h2><p id="series-count" class="p-line"></p><p id="series-badges" class="p-line"></p><p id="series-known-line" class="p-line"></p></div>
       </div>
+      <div id="lookup-section" class="p-section lookups" hidden></div>
+      <div id="known-section" class="p-section" hidden></div>
       <div id="summary-section" class="p-section" hidden><h3>Summary</h3><p id="series-summary" class="summary"></p></div>
       <div class="p-section"><h3 id="volumes-heading">Volumes</h3><div id="volume-grid" class="volume-grid"></div></div>
     </div>

@@ -8,12 +8,19 @@ from . import PROJECT_DIR
 PATH = os.path.join(PROJECT_DIR, "config.json")
 DEFAULTS = {
     "manga": "~/Manga",          # folders: "~" is your home folder; relative paths start at the config file
-    "books": "graded-readers",   # the sample library in this project
+    "books": "",                 # your EPUB folder; "" for none
+    "gradedReaders": True,       # also show the graded readers in this project's graded-readers folder
     "port": 8421,
     "lan": False,                # let other devices connect (there is no login)
     "allowHosts": [],            # extra host names to answer with lan, such as a Tailscale name
     "skipMangaFolders": [],      # manga folder names to leave out of the library and OCR
-    "jiten": True,               # look up difficulty and summaries on jiten.moe
+    "jiten": True,               # look up difficulty, statistics and summaries on jiten.moe
+    "natively": True,            # look up Natively (learnnatively.com) levels
+    "jpdb": True,                # look up jpdb.io difficulty for books (jpdb has no manga)
+    "apiKeys": {                 # optional; they make the lookups personal
+        "jiten": "",             # Jiten: your coverage of each title
+        "jpdb": "",              # jpdb: your jpdb cards count as known words, like Anki cards
+    },
     "anki": {
         "url": "http://127.0.0.1:8765",  # AnkiConnect
         "search": "",            # extra Anki search for the cards that count, such as "deck:Japanese"
@@ -45,7 +52,8 @@ def load(path=None):
     settings = merge(DEFAULTS, user, os.path.basename(path))
     base = os.path.dirname(os.path.abspath(path))
     for key in ("manga", "books"):
-        settings[key] = os.path.abspath(os.path.join(base, os.path.expanduser(settings[key])))
+        if settings[key]:  # an empty books folder means none
+            settings[key] = os.path.abspath(os.path.join(base, os.path.expanduser(settings[key])))
     return settings
 
 
@@ -65,8 +73,9 @@ def save(changes, path=None):
     if not isinstance(current, dict):
         raise ConfigError(f"{os.path.basename(path)} must be a JSON object")
     updated = {**current, **changes}
-    if isinstance(changes.get("anki"), dict) and isinstance(current.get("anki"), dict):
-        updated["anki"] = {**current["anki"], **changes["anki"]}
+    for key in ("anki", "apiKeys"):
+        if isinstance(changes.get(key), dict) and isinstance(current.get(key), dict):
+            updated[key] = {**current[key], **changes[key]}
     merge(DEFAULTS, updated, os.path.basename(path))  # nothing is written unless all of it is valid
     tmp_path = path + ".tmp"
     try:
@@ -108,7 +117,7 @@ def merge(defaults, user, where):
         elif isinstance(default, list):
             if not (isinstance(value, list) and all(isinstance(item, str) for item in value)):
                 raise ConfigError(f"{name} must be a list of text")
-        elif not isinstance(value, str) or (key in ("manga", "books") and not value):
+        elif not isinstance(value, str) or (key == "manga" and not value):
             raise ConfigError(f"{name} must be text")
         elif key == "url" and not value.startswith(("http://", "https://")):
             raise ConfigError(f"{name} must start with http:// or https://")

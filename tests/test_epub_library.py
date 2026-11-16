@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from reader import epub_library
 from reader import furigana
-from reader import jiten, server
+from reader import lookups, server
 
 
 class BookLibraryTests(unittest.TestCase):
@@ -18,7 +18,9 @@ class BookLibraryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.old_root = epub_library.BOOK_ROOT
         self.old_manga_root = server.ROOT
+        self.old_graded = epub_library.GRADED_ROOT, epub_library.SHOW_GRADED
         epub_library.BOOK_ROOT = self.temp.name
+        epub_library.SHOW_GRADED = False  # the graded readers in the project are not part of these tests
         server.ROOT = self.temp.name
         os.mkdir(os.path.join(self.temp.name, "nested"))
         self.name = "nested/日本語 #1.epub"
@@ -45,6 +47,7 @@ class BookLibraryTests(unittest.TestCase):
         self.thread.join()
         self.server.server_close()
         epub_library.BOOK_ROOT = self.old_root
+        epub_library.GRADED_ROOT, epub_library.SHOW_GRADED = self.old_graded
         server.ROOT = self.old_manga_root
         self.temp.cleanup()
 
@@ -124,14 +127,46 @@ class BookLibraryTests(unittest.TestCase):
             file.write("old copy")
         self.assertEqual(server.stale_manga_override(), override)
 
-    def test_jiten_failure_returns_an_error(self):
-        with mock.patch.object(jiten, "get_difficulty",
-                               side_effect=jiten.JitenLookupError("offline")):
-            self.assertEqual(self.request("/api/difficulty?title=example")[0], 502)
-        with mock.patch.object(jiten, "get_difficulty", return_value=None) as lookup:
-            self.assertEqual(self.request("/api/difficulty?title=example&type=novel")[0], 200)
-            self.assertEqual(self.request("/api/difficulty?title=example&type=anime")[0], 400)
-        lookup.assert_called_once_with("example", "novel")
+    def test_lookup_failure_returns_an_error(self):
+        with mock.patch.object(lookups, "lookup", side_effect=lookups.Unavailable("offline")):
+            self.assertEqual(self.request("/api/lookup?source=jiten&title=example")[0], 502)
+        with mock.patch.object(lookups, "lookup", return_value={"source": "jpdb", "result": None}) as lookup:
+            self.assertEqual(self.request("/api/lookup?source=jpdb&title=example&type=novel")[0], 200)
+        lookup.assert_called_once_with("jpdb", "novel", "example")
+        self.assertEqual(self.request("/api/lookup?source=jiten&title=example&type=anime")[0], 400)
+        self.assertEqual(self.request("/api/lookup?source=other&title=example")[0], 400)
+
+    def test_graded_readers_are_a_shelf_of_their_own(self):
+        graded = os.path.join(self.temp.name, "graded")
+        os.makedirs(os.path.join(graded, "N5"))
+        source = os.path.join(self.temp.name, *self.name.split("/"))
+        with open(source, "rb") as file:
+            data = file.read()
+        with open(os.path.join(graded, "N5", "story.epub"), "wb") as file:
+            file.write(data)
+        epub_library.GRADED_ROOT, epub_library.SHOW_GRADED = graded, True
+        books = json.loads(self.request("/api/books")[2])["books"]
+        shelves = {book["id"]: (book["shelf"], book["series"], book["seriesKey"]) for book in books}
+        self.assertEqual(shelves["graded:N5/story.epub"], ("graded", "N5", "graded:folder:N5"))
+        self.assertEqual(shelves["graded/N5/story.epub"][0], "books")  # also under the book folder
+        status, _, body = self.request("/epub-content/" + quote("graded:N5/story.epub", safe="") + "/OPS/text/chapter.xhtml")
+        self.assertEqual((status, "本文".encode("utf-8") in body), (200, True))
+        with self.assertRaises(ValueError):
+            epub_library.book_path("graded:../nested/日本語 #1.epub")
+        # A book folder that is the graded readers (the old default) shows them once; no folder shows them alone.
+        for root in (graded, ""):
+            epub_library.BOOK_ROOT = root
+            data = json.loads(self.request("/api/books")[2])
+            self.assertEqual(([book["id"] for book in data["books"]], data["bookFolder"]), (["graded:N5/story.epub"], ""))
+        epub_library.SHOW_GRADED = False
+        self.assertEqual(json.loads(self.request("/api/books")[2])["books"], [])
+
+    def test_book_text_and_known_words(self):
+        text = list(epub_library.book_paragraphs(self.name))
+        self.assertEqual(text, ["本文"])
+        with mock.patch.object(server.known_words, "anki_words", return_value=None):
+            self.assertEqual(json.loads(self.request("/api/book-known-words?book=" + quote(self.name))[2]), {"ankiOffline": True})
+        self.assertEqual(self.request("/api/book-known-words?book=missing.epub")[0], 404)
 
     def test_furigana_endpoint_and_errors(self):
         def post(body, content_type="application/json"):

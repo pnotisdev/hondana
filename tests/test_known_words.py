@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from reader import furigana, known_words, server
+from reader import furigana, jpdb, known_words, server, web
 
 
 def have_tagger():
@@ -32,7 +32,9 @@ class AnkiWordTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         patches = [mock.patch.object(known_words, "CACHE_DIR", self.temp.name),
-                   mock.patch.object(known_words, "_anki_state", {"words": None, "checked": 0.0})]
+                   mock.patch.object(known_words, "_anki_state", {"words": None, "checked": 0.0, "saved": {},
+                                                                 "offline": {}, "errors": {}}),
+                   mock.patch.object(known_words, "JPDB_KEY", "")]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -93,6 +95,48 @@ class AnkiWordTests(unittest.TestCase):
             result = known_words.anki_words()
         self.assertEqual((result["known"], result["at"], result["offline"]), ({"猫"}, 1700000000.0, True))
 
+    def test_jpdb_words_count_with_anki_and_an_offline_source_keeps_its_list(self):
+        anki = {"known": ["猫"], "learning": ["犬"], "new": [], "at": 10.0}
+        mine = {"known": ["犬"], "learning": [], "new": ["鳥"], "at": 20.0}
+        sources = {"anki": (lambda: anki, "anki-words.json"), "jpdb": (lambda: mine, "jpdb-words.json")}
+        with mock.patch.object(known_words, "JPDB_KEY", "key"), mock.patch.dict(known_words.SOURCES, sources):
+            result = known_words.refresh_anki_words()
+            self.assertTrue({"猫", "犬"} <= result["known"] and "犬" not in result["learning"] and "鳥" in result["new"])
+            self.assertEqual((result["offline"], result["at"], result["sources"]["jpdb"]["counts"]["new"]), (False, 10.0, 1))
+
+            def offline():
+                raise known_words.AnkiOffline("jpdb is down")
+            with mock.patch.dict(known_words.SOURCES, {"jpdb": (offline, "jpdb-words.json")}):
+                result = known_words.refresh_anki_words()
+            self.assertTrue("鳥" in result["new"] and result["offline"])  # the words jpdb had still count
+            self.assertEqual(result["sources"]["jpdb"]["error"], "jpdb is down")
+            with open(os.path.join(self.temp.name, "jpdb-words.json"), encoding="utf-8") as file:
+                self.assertEqual(json.load(file), mine)
+        self.assertEqual(known_words.word_summary(result)["counts"]["new"], len(result["new"]))
+
+    def test_jpdb_decks_and_card_states(self):
+        self.assertEqual([jpdb.word_status(states) for states in (["known"], ["learning", "due"], ["new"], ["blacklisted"], None)],
+                         ["known", "learning", "new", "known", None])
+
+        def fake_api(endpoint, **params):
+            if endpoint == "deck/list-user":
+                return {"decks": [[1]]}
+            if endpoint == "deck/list-vocabulary":
+                if params["id"] == "blacklist":
+                    raise web.LookupFailed("no such deck")
+                return {"vocabulary": [[100, 1], [200, 2]] if params["id"] == 1 else [[300, 3]]}
+            self.assertEqual(params["list"], [[100, 1], [200, 2], [300, 3]])
+            return {"vocabulary_info": [["猫", "ねこ", ["known"]], ["犬", "いぬ", ["failed"]], ["鳥", "とり", None]]}
+
+        with mock.patch.object(jpdb, "api", side_effect=fake_api):
+            self.assertEqual(jpdb.deck_words(), {"known": {"猫"}, "learning": {"犬"}, "new": set()})
+
+    def test_note_type_field_is_suggested_by_name_then_by_short_japanese_values(self):
+        self.assertEqual(known_words.suggest_field(["Front", "Expression"], {"Front": ["dog"], "Expression": ["犬"]}), "Expression")
+        self.assertEqual(known_words.suggest_field(["Sentence", "Target"], {"Sentence": ["これは長い文です。とても長い。"], "Target": ["猫", "犬"]}),
+                         "Target")
+        self.assertIsNone(known_words.suggest_field(["Text"], {"Text": ["Welcome to the deck"]}))
+
     def test_a_list_in_hand_is_returned_at_once_and_refreshed_behind_the_request(self):
         current = known_words.word_sets({"known": ["猫"], "at": 1.0}, offline=False)
         known_words._anki_state.update(words=current, checked=0.0)
@@ -115,6 +159,16 @@ class CountingTests(unittest.TestCase):
     def count(self, text, **lists):
         types = [(*key, count) for key, count in known_words.word_types(text).items()]
         return known_words.count_known(types, words(**lists))
+
+    def test_book_words_to_learn_leave_out_names_suffixes_and_known_words(self):
+        path = os.path.join(self.temp.name, "book.epub")
+        with open(path, "wb") as file:
+            file.write(b"book")
+        types, names = known_words.book_types(path, lambda: ["田中さんは猫が好きです。", "猫と犬と犬。"])
+        result = known_words.words_to_learn(types, words(known=["猫"], new=["犬"]), names)
+        self.assertEqual([(entry["word"], entry["count"], entry["status"]) for entry in result], [("犬", 2, "new"), ("好き", 1, None)])
+        # The second time the counts come from the cache.
+        self.assertEqual(known_words.book_types(path, lambda: self.fail("read again"))[0], types)
 
     def test_punctuation_and_numbers_are_skipped_and_particles_are_known(self):
         result = self.count("猫が好きです。テレビ！１２３", known=["猫", "テレビ"])
